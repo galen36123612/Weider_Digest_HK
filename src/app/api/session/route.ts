@@ -38,24 +38,24 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     // 建立/讀取匿名 userId（cookie）
-    const jar = cookies();
+    const jar = await cookies(); // ✅ Next 15 要 await
     let userId = jar.get("anonId")?.value;
     if (!userId) {
       userId = randomUUID();
       jar.set({
         name: "anonId",
         value: userId,
-        httpOnly: false, // 若不須前端讀取可改 true
+        httpOnly: false, // 若不需前端讀取可改 true
         sameSite: "lax",
         path: "/",
         maxAge: 60 * 60 * 24 * 365,
       });
     }
 
-    // 本次交談 sessionId（暫時不落庫）
+    // 本次交談 sessionId（暫不落庫）
     const sessionId = randomUUID();
 
-    // 向 OpenAI 取 Realtime ephemeral key（沿用你的原邏輯）
+    // 向 OpenAI 取 Realtime ephemeral key（沿用你的邏輯）
     const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
@@ -80,6 +80,7 @@ export async function GET() {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
+
 
 
 
