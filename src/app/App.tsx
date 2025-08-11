@@ -9008,47 +9008,56 @@ function AppContent() {
 
       // ★ 保險：在 DC 事件層做助理回覆落檔（無論 Transcript 狀態如何）
       dc.addEventListener("message", (e: MessageEvent) => {
-        const eventData: any = JSON.parse(e.data);
-        handleServerEventRef.current(eventData);
+  const eventData: any = JSON.parse(e.data);
+  handleServerEventRef.current(eventData);
 
-        const t = String(eventData?.type || "");
-        if (t === "input_audio_buffer.speech_started") setIsListening(true);
-        if (t === "input_audio_buffer.speech_stopped" || t === "input_audio_buffer.committed") setIsListening(false);
+  const t = String(eventData?.type || "");
 
-        // 累積助理輸出
-        if (
-          t === "response.output_text.delta" ||
-          t === "output_text.delta" ||
-          t.startsWith("response.refusal.delta")
-        ) {
-          assistantBufferRef.current += eventData.delta || "";
-        }
+  // 麥克風聆聽指示燈
+  if (t === "input_audio_buffer.speech_started") setIsListening(true);
+  if (t === "input_audio_buffer.speech_stopped" || t === "input_audio_buffer.committed") setIsListening(false);
 
-        // 完成 -> 寫一筆完整助理回覆
-        if (t === "response.completed" || t === "response.output_text.done" || t === "output_text.done") {
-          const full = assistantBufferRef.current.trim();
-          if (full) {
-            const id = `assistant:${full}`;
-            if (!loggedIds.current.has(id)) {
-              postLog({ role: "assistant", content: full, eventId: eventData.response?.id || eventData.id });
-              loggedIds.current.add(id);
-            }
-          }
-          assistantBufferRef.current = "";
-        }
+  // —— 助理輸出：先清空 buffer（開始一個新回合）
+  if (t === "response.created" || t === "response.started") {
+    assistantBufferRef.current = "";
+  }
 
-        // 語音轉文字完成 -> 記錄成使用者訊息
-        if (t.includes("input_audio_transcription") && t.includes("completed")) {
-          const text = eventData.transcript || eventData.text || "";
-          if (text) {
-            const id = `user:${text}`;
-            if (!loggedIds.current.has(id)) {
-              postLog({ role: "user", content: text, eventId: eventData.item_id });
-              loggedIds.current.add(id);
-            }
-          }
-        }
+  // —— 助理輸出：累積 delta（若模型有送文字流）
+  if (
+    t === "response.output_text.delta" ||
+    t === "output_text.delta" ||
+    t.startsWith("response.refusal.delta")
+  ) {
+    assistantBufferRef.current += eventData.delta || "";
+  }
+
+  // —— 助理完成：不論有沒有 delta，都嘗試取文字並落檔
+  if (t === "response.completed" || t === "response.output_text.done" || t === "output_text.done") {
+    // 1) 先用我們累積的
+    let full = (assistantBufferRef.current || "").trim();
+
+    // 2) 沒有的話，從 eventData.response 的幾種常見結構兜底取文字
+    if (!full) full = extractAssistantTextFromResponse(eventData) || "";
+
+    if (full) {
+      postLog({
+        role: "assistant",
+        content: full,
+        eventId: eventData.response?.id || eventData.id,
       });
+    }
+    assistantBufferRef.current = "";
+  }
+
+  // —— 麥克風語音→轉文字完成：記錄為 user 訊息
+  // 這裡放寬判斷，避免不同版本事件名稱對不上
+  if ((t.includes("transcription") || t.includes("speech.recognized")) && t.includes("completed")) {
+    const text = eventData.transcript || eventData.text || "";
+    if (text) {
+      postLog({ role: "user", content: text, eventId: eventData.item_id });
+    }
+  }
+});
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
