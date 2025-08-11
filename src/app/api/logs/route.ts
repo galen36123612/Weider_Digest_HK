@@ -20,7 +20,7 @@ export async function POST(req: Request) {
     const body = JSON.stringify({ ts, sessionId, userId, role, content, eventId }) + "\n";
 
     await put(key, body, {
-      access: "private",
+      access: "public",
       contentType: "application/json",
     });
 
