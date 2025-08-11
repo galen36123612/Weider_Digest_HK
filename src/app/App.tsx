@@ -8859,10 +8859,11 @@ function AppContent() {
 
   const { startRecording, stopRecording, downloadRecording } = useAudioDownload();
 
-  // === [1] 問答寫入 Blob：userId / sessionId + 已寫入集合 + 抽字工具 ===
+  // ===== 混合式落檔：必要狀態 =====
   const [userId, setUserId] = useState<string>("");
   const [sessionId, setSessionId] = useState<string>("");
-  const loggedMessageIds = useRef<Set<string>>(new Set());
+  const assistantBufferRef = useRef<string>("");
+  const loggedIds = useRef<Set<string>>(new Set());
 
   function extractTextFromContent(content: any): string {
     if (!content) return "";
@@ -8957,13 +8958,12 @@ function AppContent() {
   async function connectToRealtime() {
     setSessionStatus("CONNECTING");
     try {
-      // 拿 Realtime ephemeral key + 我們自己的 userId/sessionId
+      // 取 ephemeral key + 我們自己的 userId/sessionId
       logClientEvent({ url: "/api/session" }, "fetch_session_token_request");
       const tokenResponse = await fetch("/api/session");
       const data = await tokenResponse.json();
       logServerEvent(data, "fetch_session_token_response");
 
-      // [2] 儲存 userId / sessionId（來自 /api/session）
       if (data?.userId) setUserId(data.userId);
       if (data?.sessionId) setSessionId(data.sessionId);
 
@@ -9006,7 +9006,7 @@ function AppContent() {
         logClientEvent({ error: err }, "data_channel.error");
       });
 
-      // [5] DC 事件只做 UI 狀態，不在這裡落檔（避免重複）
+      // ★ 保險：在 DC 事件層做助理回覆落檔（無論 Transcript 狀態如何）
       dc.addEventListener("message", (e: MessageEvent) => {
         const eventData: any = JSON.parse(e.data);
         handleServerEventRef.current(eventData);
@@ -9014,6 +9014,40 @@ function AppContent() {
         const t = String(eventData?.type || "");
         if (t === "input_audio_buffer.speech_started") setIsListening(true);
         if (t === "input_audio_buffer.speech_stopped" || t === "input_audio_buffer.committed") setIsListening(false);
+
+        // 累積助理輸出
+        if (
+          t === "response.output_text.delta" ||
+          t === "output_text.delta" ||
+          t.startsWith("response.refusal.delta")
+        ) {
+          assistantBufferRef.current += eventData.delta || "";
+        }
+
+        // 完成 -> 寫一筆完整助理回覆
+        if (t === "response.completed" || t === "response.output_text.done" || t === "output_text.done") {
+          const full = assistantBufferRef.current.trim();
+          if (full) {
+            const id = `assistant:${full}`;
+            if (!loggedIds.current.has(id)) {
+              postLog({ role: "assistant", content: full, eventId: eventData.response?.id || eventData.id });
+              loggedIds.current.add(id);
+            }
+          }
+          assistantBufferRef.current = "";
+        }
+
+        // 語音轉文字完成 -> 記錄成使用者訊息
+        if (t.includes("input_audio_transcription") && t.includes("completed")) {
+          const text = eventData.transcript || eventData.text || "";
+          if (text) {
+            const id = `user:${text}`;
+            if (!loggedIds.current.has(id)) {
+              postLog({ role: "user", content: text, eventId: eventData.item_id });
+              loggedIds.current.add(id);
+            }
+          }
+        }
       });
 
       const offer = await pc.createOffer();
@@ -9105,7 +9139,13 @@ function AppContent() {
       "(send user text message)"
     );
 
-    // [3] 不在這裡 postLog，改由 Transcript 監測統一落檔
+    // 文字送出時，先記一筆 user（避免 Transcript/Whisper 延遲漏記）
+    const id = `user:${textToSend}`;
+    if (!loggedIds.current.has(id)) {
+      postLog({ role: "user", content: textToSend });
+      loggedIds.current.add(id);
+    }
+
     setUserText("");
     sendClientEvent({ type: "response.create" }, "(trigger response)");
   };
@@ -9188,31 +9228,31 @@ function AppContent() {
     };
   }, []);
 
-  // [4] 監視 Transcript：只要 user / assistant 的「完成訊息」出現，就寫入 Blob
+  // 保底：從 Transcript 監測完成訊息（避免 UI pipeline 改動）
   useEffect(() => {
     if (!transcriptItems?.length) return;
 
-    for (const item of (transcriptItems as any[])) {
-      const id =
-        item.id ||
-        item.item_id ||
-        `${item.role}:${extractTextFromContent(item.content)}`;
-      if (!id || loggedMessageIds.current.has(id)) continue;
-
+    for (const item of transcriptItems as any[]) {
       const roleStr = String(item.role);
       if (roleStr !== "user" && roleStr !== "assistant") continue;
 
-      // 嘗試判斷「完成態」
+      const text = extractTextFromContent(item.content);
+      if (!text) continue;
+
+      const id =
+        item.id ||
+        item.item_id ||
+        `${roleStr}:${text}`;
+
+      if (!id || loggedIds.current.has(id)) continue;
+
       const status = String(item.status || item.state || "").toUpperCase();
       const isDone = status.includes("COMPLETE") || status.includes("FINAL") || status === "";
 
       if (!isDone) continue;
 
-      const text = extractTextFromContent(item.content);
-      if (!text) continue;
-
       postLog({ role: roleStr as "user" | "assistant", content: text, eventId: item.id || item.item_id });
-      loggedMessageIds.current.add(id);
+      loggedIds.current.add(id);
     }
   }, [transcriptItems]);
 
@@ -9281,6 +9321,7 @@ function App() {
 }
 
 export default App;
+
 
 
 
