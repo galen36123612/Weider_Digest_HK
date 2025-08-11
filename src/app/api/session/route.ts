@@ -87,26 +87,17 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { randomUUID } from "crypto";
 
-export const runtime = "nodejs"; // 很重要！Node runtime 才能同步 cookies()
+export const runtime = "nodejs"; // 用 Node.js runtime
 
 export async function GET() {
   try {
-    // 1) 取得/建立匿名 userId（寫入 cookie）
-    const jar = cookies(); // Node runtime 下是同步的
-    let userId = jar.get("anonId")?.value;
-    if (!userId) {
-      userId = randomUUID();
-      jar.set({
-        name: "anonId",
-        value: userId,
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        maxAge: 60 * 60 * 24 * 365, // 1 year
-      });
-    }
+    // 1) 讀/建匿名 userId
+    const cookieStore = await cookies(); // ← 這裡用 await，避免型別是 Promise
+    let userId = cookieStore.get("anonId")?.value;
+    const needSetCookie = !userId;
+    if (!userId) userId = randomUUID();
 
-    // 2) 為這次連線產生一個 sessionId
+    // 2) 產生這次連線的 sessionId
     const sessionId = randomUUID();
 
     // 3) 向 OpenAI 建立 Realtime ephemeral session
@@ -118,18 +109,32 @@ export async function GET() {
       },
       body: JSON.stringify({
         model: "gpt-4o-realtime-preview-2024-12-17",
-        // 也可以用你先前那個 2025-06-03 的預覽型號
+        // 或換你之前那個 2025-06-03 預覽型號都行
       }),
     });
 
     const data = await resp.json();
 
-    // 4) 一併把 userId / sessionId 回給前端（AppContent 會 set 進 state）
-    return NextResponse.json({
+    // 4) 回傳 ephemeral key + 我們自己的 userId / sessionId
+    const res = NextResponse.json({
       ...data,
       userId,
       sessionId,
     });
+
+    // 5) 只有在沒有 anonId 時才設 cookie（用 NextResponse 設）
+    if (needSetCookie) {
+      res.cookies.set({
+        name: "anonId",
+        value: userId,
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        maxAge: 60 * 60 * 24 * 365, // 1 年
+      });
+    }
+
+    return res;
   } catch (error: any) {
     console.error("Error in /api/session:", error);
     return NextResponse.json(
@@ -138,6 +143,7 @@ export async function GET() {
     );
   }
 }
+
 
 
 
