@@ -8885,7 +8885,35 @@ function AppContent() {
     }
     return "";
   }
+  
+  // 0811 V2 add assist answer
+  function extractAssistantTextFromResponse(ev: any): string {
+  const r = ev?.response || ev;
+  // 直接欄位
+  if (typeof r?.output_text === "string") return r.output_text;
+  if (Array.isArray(r?.output_text)) return r.output_text.join("");
 
+  // 內容陣列常見寫法
+  if (Array.isArray(r?.content)) {
+    const txt = r.content
+      .map((c: any) => {
+        if (typeof c?.text === "string") return c.text;
+        if (typeof c?.value === "string") return c.value;
+        if (typeof c?.content === "string") return c.content;
+        if (c?.type && typeof c?.text === "string") return c.text; // e.g. {type:'output_text', text:'...'}
+        return "";
+      })
+      .filter(Boolean)
+      .join("")
+      .trim();
+    if (txt) return txt;
+  }
+
+  // 其他保底欄位
+  if (typeof r?.text === "string") return r.text;
+  if (typeof ev?.text === "string") return ev.text;
+  return "";
+}
   async function postLog(log: { role: "user" | "assistant" | "system"; content: string; eventId?: string }) {
     if (!userId || !sessionId || !log.content?.trim()) return;
     const body = JSON.stringify({ ...log, userId, sessionId });
