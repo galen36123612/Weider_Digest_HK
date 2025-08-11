@@ -86,12 +86,13 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const day = url.searchParams.get("day") || tpeDay();
   const detail = url.searchParams.get("detail") === "1";
+  const flat = url.searchParams.get("flat") === "1";
   const format = (url.searchParams.get("format") || "json").toLowerCase();
 
   const prefix = `logs/${day}/`;
   const { blobs } = await list({ prefix });
 
-  // 讀取當天所有 log 檔
+  // 讀取當天所有 log（只收 user/assistant）
   const logs: LogRec[] = [];
   for (const b of blobs) {
     const res = await fetch(b.url);
@@ -103,18 +104,24 @@ export async function GET(req: Request) {
     } catch {}
   }
 
-  // 依 sessionId、時間排序
-  logs.sort(
-    (a, b) =>
-      a.sessionId.localeCompare(b.sessionId) || a.ts.localeCompare(b.ts)
-  );
+  logs.sort((a, b) => a.sessionId.localeCompare(b.sessionId) || a.ts.localeCompare(b.ts));
+
+  // 平鋪 raw 訊息（debug/稽核用）
+  if (flat) {
+    if (format === "csv") {
+      const csv = toCsv(logs, ["ts", "sessionId", "userId", "role", "content"]);
+      return new Response(csv, {
+        headers: { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
+    return new Response(JSON.stringify({ day, total: logs.length, logs }, null, 2), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
 
   // 只要計數
   if (!detail) {
-    const counts = logs.reduce(
-      (acc, r) => ((acc[r.role] = (acc[r.role] || 0) + 1), acc),
-      {} as Record<string, number>
-    );
+    const counts = logs.reduce((acc, r) => ((acc[r.role] = (acc[r.role] || 0) + 1), acc), {} as Record<string, number>);
     const out = [
       { day, role: "assistant", count: counts["assistant"] || 0 },
       { day, role: "user", count: counts["user"] || 0 },
@@ -122,10 +129,7 @@ export async function GET(req: Request) {
     if (format === "csv") {
       const csv = toCsv(out, ["day", "role", "count"]);
       return new Response(csv, {
-        headers: {
-          "content-type": "text/csv; charset=utf-8",
-          "cache-control": "no-store",
-        },
+        headers: { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store" },
       });
     }
     return new Response(JSON.stringify(out, null, 2), {
@@ -133,7 +137,7 @@ export async function GET(req: Request) {
     });
   }
 
-  // detail=1：把「使用者 → 助手」配對
+  // detail=1：配對「使用者 → 助手」
   const pairs: Array<{
     day: string;
     sessionId: string;
@@ -143,48 +147,34 @@ export async function GET(req: Request) {
     assistantText: string;
   }> = [];
 
-  let lastUser: LogRec | null = null;
+  const lastUserBySession: Record<string, LogRec | null> = {};
   for (const rec of logs) {
     if (rec.role === "user") {
-      lastUser = rec;
-    } else if (
-      rec.role === "assistant" &&
-      lastUser &&
-      rec.sessionId === lastUser.sessionId
-    ) {
-      pairs.push({
-        day,
-        sessionId: rec.sessionId,
-        userTs: lastUser.ts,
-        userText: lastUser.content,
-        assistantTs: rec.ts,
-        assistantText: rec.content,
-      });
-      lastUser = null;
+      lastUserBySession[rec.sessionId] = rec;
+    } else if (rec.role === "assistant") {
+      const u = lastUserBySession[rec.sessionId];
+      if (u) {
+        pairs.push({
+          day,
+          sessionId: rec.sessionId,
+          userTs: u.ts,
+          userText: u.content,
+          assistantTs: rec.ts,
+          assistantText: rec.content,
+        });
+        lastUserBySession[rec.sessionId] = null;
+      }
     }
   }
 
   if (format === "csv") {
-    const csv = toCsv(pairs, [
-      "day",
-      "sessionId",
-      "userTs",
-      "userText",
-      "assistantTs",
-      "assistantText",
-    ]);
+    const csv = toCsv(pairs, ["day", "sessionId", "userTs", "userText", "assistantTs", "assistantText"]);
     return new Response(csv, {
-      headers: {
-        "content-type": "text/csv; charset=utf-8",
-        "cache-control": "no-store",
-      },
+      headers: { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store" },
     });
   }
 
   return new Response(JSON.stringify({ day, totalPairs: pairs.length, pairs }, null, 2), {
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    },
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
 }
