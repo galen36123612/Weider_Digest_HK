@@ -32,36 +32,30 @@ export async function GET() {
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { randomUUID } from "crypto";
-import { sql } from "@vercel/postgres";
 
-export const runtime = "nodejs"; // 用 Postgres 需要 Node 端執行
+export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    // 1) 取得/建立匿名 userId（cookie）
+    // 建立/讀取匿名 userId（cookie）
     const jar = cookies();
     let userId = jar.get("anonId")?.value;
     if (!userId) {
       userId = randomUUID();
-      // 若你不需要在前端讀 cookie，可改 httpOnly: true
       jar.set({
         name: "anonId",
         value: userId,
-        httpOnly: false,
+        httpOnly: false, // 若不須前端讀取可改 true
         sameSite: "lax",
         path: "/",
-        maxAge: 60 * 60 * 24 * 365, // 1 年
+        maxAge: 60 * 60 * 24 * 365,
       });
     }
 
-    // 2) 產生本次交談的 sessionId，並寫 DB
+    // 本次交談 sessionId（暫時不落庫）
     const sessionId = randomUUID();
 
-    // 這兩張表要先建好（見下方 schema）
-    await sql`INSERT INTO users (id) VALUES (${userId}) ON CONFLICT (id) DO NOTHING;`;
-    await sql`INSERT INTO sessions (id, user_id) VALUES (${sessionId}, ${userId});`;
-
-    // 3) 向 OpenAI 取得 Realtime ephemeral key（保留你原本的做法）
+    // 向 OpenAI 取 Realtime ephemeral key（沿用你的原邏輯）
     const response = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
@@ -70,7 +64,6 @@ export async function GET() {
       },
       body: JSON.stringify({
         model: "gpt-4o-realtime-preview-2025-06-03",
-        // 需要的話可加 voice / modalities 等其他 session 項目
       }),
     });
 
@@ -81,17 +74,12 @@ export async function GET() {
     }
 
     const data = await response.json();
-
-    // 4) 回傳 ephemeral key + 我們自己的 userId / sessionId
-    return NextResponse.json({
-      ...data,
-      userId,
-      sessionId,
-    });
+    return NextResponse.json({ ...data, userId, sessionId });
   } catch (error) {
     console.error("Error in /session:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
+
 
 
