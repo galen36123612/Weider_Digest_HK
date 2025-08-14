@@ -10719,27 +10719,6 @@ function AppContent() {
   // 防止重复记录的 Set
   const loggedEventIds = useRef<Set<string>>(new Set());
 
-  function extractTextFromContent(content: any): string {
-    if (!content) return "";
-    if (typeof content === "string") return content;
-    if (Array.isArray(content)) {
-      return content
-        .map((c: any) =>
-          typeof c === "string"
-            ? c
-            : c?.text ?? c?.value ?? (typeof c?.content === "string" ? c.content : "")
-        )
-        .join(" ")
-        .trim();
-    }
-    if (typeof content === "object") {
-      if (typeof content.text === "string") return content.text;
-      if (typeof content.value === "string") return content.value;
-      if (typeof content.content === "string") return content.content;
-    }
-    return "";
-  }
-
   async function postLog(log: { role: "user" | "assistant" | "system"; content: string; eventId?: string }) {
     if (!userId || !sessionId || !log.content?.trim()) {
       console.warn("🚫 postLog skipped:", { 
@@ -11421,6 +11400,7 @@ function App() {
 }
 
 export default App;
+
 
 
 
