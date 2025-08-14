@@ -10899,238 +10899,152 @@ function AppContent() {
 
       // ★★★ 核心事件处理逻辑 ★★★
       dc.addEventListener("message", (e: MessageEvent) => {
-        const eventData: any = JSON.parse(e.data);
-        handleServerEventRef.current(eventData);
+  const eventData: any = JSON.parse(e.data);
+  handleServerEventRef.current(eventData);
 
-        const eventType = String(eventData?.type || "");
+  const eventType = String(eventData?.type || "");
+  
+  // 详细记录所有接收到的事件
+  console.log("📨 Event received:", {
+    type: eventType,
+    eventData // 完整记录事件数据用于调试
+  });
+
+  // 处理麦克风状态指示
+  if (eventType === "input_audio_buffer.speech_started") {
+    setIsListening(true);
+    console.log("🎤 User started speaking");
+  }
+  
+  if (eventType === "input_audio_buffer.speech_stopped") {
+    setIsListening(false);
+    console.log("🎤 User stopped speaking");
+  }
+
+  if (eventType === "input_audio_buffer.committed") {
+    setIsListening(false);
+    console.log("🎤 Audio buffer committed");
+  }
+
+  // —— 处理用户语音转文字 ——
+  if (eventType === "conversation.item.input_audio_transcription.completed") {
+    const transcript = eventData.transcript || eventData.text || "";
+    console.log("🗣️ Speech transcription completed:", transcript);
+    
+    if (transcript.trim()) {
+      const eventId = eventData.item_id || eventData.id || `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      postLog({ 
+        role: "user", 
+        content: transcript.trim(), 
+        eventId 
+      });
+    }
+  }
+
+  // —— 助手回应开始 ——
+  if (eventType === "response.created") {
+    const responseId = eventData.response?.id || eventData.id;
+    console.log("🤖 Assistant response created:", responseId);
+    
+    // 重置并初始化助手回应状态
+    assistantResponseState.current = {
+      responseId,
+      itemId: null,
+      contentPartId: null,
+      textBuffer: "",
+      isActive: true,
+      startTime: Date.now(),
+    };
+  }
+
+  // —— 文字增量处理（关键！） ——
+  if (eventType === "response.text.delta") {
+    const delta = eventData.delta || "";
+    console.log("📄 Text delta:", delta);
+
+    if (assistantResponseState.current.isActive && delta) {
+      assistantResponseState.current.textBuffer += delta;
+      console.log("📊 Buffer updated, length:", assistantResponseState.current.textBuffer.length);
+    }
+  }
+
+  // —— 助手回应完成 ——
+  if (eventType === "response.done") {
+    console.log("🏁 Response done - processing assistant response");
+    
+    const state = assistantResponseState.current;
+    let finalText = state.textBuffer.trim();
+    
+    // 如果缓冲区为空，尝试从 response 对象中提取
+    if (!finalText && eventData.response) {
+      console.log("🔍 Extracting text from response object");
+      
+      try {
+        // 尝试多种可能的文本提取路径
+        const response = eventData.response;
         
-        // 详细记录所有接收到的事件
-        console.log("📨 Event received:", {
-          type: eventType,
-          data: eventData
-        });
-
-        // 处理麦克风状态指示
-        if (eventType === "input_audio_buffer.speech_started") {
-          setIsListening(true);
-          console.log("🎤 User started speaking");
-        }
-        
-        if (eventType === "input_audio_buffer.speech_stopped") {
-          setIsListening(false);
-          console.log("🎤 User stopped speaking");
-        }
-
-        if (eventType === "input_audio_buffer.committed") {
-          setIsListening(false);
-          console.log("🎤 Audio buffer committed");
-        }
-
-        // —— 处理用户语音转文字 ——
-        if (eventType === "conversation.item.input_audio_transcription.completed") {
-          const transcript = eventData.transcript || eventData.text || "";
-          console.log("🗣️ Speech transcription completed:", transcript);
-          
-          if (transcript.trim()) {
-            const eventId = eventData.item_id || eventData.id || `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-            postLog({ 
-              role: "user", 
-              content: transcript.trim(), 
-              eventId 
-            });
-          } else {
-            console.warn("⚠️ Empty transcript received");
-          }
-        }
-
-        // —— 处理用户语音转文字失败 ——
-        if (eventType === "conversation.item.input_audio_transcription.failed") {
-          console.error("❌ Speech transcription failed:", eventData);
-        }
-
-        // —— 助手回应开始 ——
-        if (eventType === "response.created") {
-          const responseId = eventData.response?.id || eventData.id;
-          console.log("🤖 Assistant response created:", responseId);
-          
-          // 重置并初始化助手回应状态
-          assistantResponseState.current = {
-            responseId,
-            itemId: null,
-            contentPartId: null,
-            textBuffer: "",
-            isActive: true,
-            startTime: Date.now(),
-          };
-        }
-
-        // —— 对话项目创建 ——
-        if (eventType === "conversation.item.created") {
-          const item = eventData.item;
-          const itemId = item?.id || eventData.item_id;
-          
-          console.log("📋 Conversation item created:", {
-            itemId,
-            role: item?.role,
-            type: item?.type,
-            status: item?.status
-          });
-
-          // 如果是助手消息项，记录 item ID
-          if (item?.role === "assistant" && assistantResponseState.current.isActive) {
-            assistantResponseState.current.itemId = itemId;
-          }
-        }
-
-        // —— 内容部分添加 ——
-        if (eventType === "response.content_part.added") {
-          const part = eventData.part;
-          const itemId = eventData.item_id;
-          const partId = part?.id;
-          
-          console.log("📝 Content part added:", {
-            itemId,
-            partId,
-            partType: part?.type,
-            hasText: !!part?.text
-          });
-
-          if (part?.type === "text" && assistantResponseState.current.isActive) {
-            assistantResponseState.current.itemId = itemId;
-            assistantResponseState.current.contentPartId = partId;
-            
-            // 如果 part 已经有文字，先记录
-            if (part.text) {
-              assistantResponseState.current.textBuffer += part.text;
-              console.log("📄 Initial text from content part:", part.text);
-            }
-          }
-        }
-
-        // —— 文字增量（这是最重要的事件） ——
-        if (eventType === "response.text.delta") {
-          const delta = eventData.delta || "";
-          const itemId = eventData.item_id;
-          const contentIndex = eventData.content_index;
-          
-          console.log("📄 Text delta received:", {
-            delta: delta.substring(0, 100) + (delta.length > 100 ? "..." : ""),
-            itemId,
-            contentIndex,
-            deltaLength: delta.length
-          });
-
-          if (assistantResponseState.current.isActive) {
-            assistantResponseState.current.textBuffer += delta;
-            assistantResponseState.current.itemId = itemId || assistantResponseState.current.itemId;
-            
-            console.log("📊 Current buffer length:", assistantResponseState.current.textBuffer.length);
-          } else {
-            console.warn("⚠️ Received text delta but assistant response not active");
-          }
-        }
-
-        // —— 文字完成 ——
-        if (eventType === "response.text.done") {
-          const text = eventData.text || "";
-          const itemId = eventData.item_id;
-          
-          console.log("✅ Text done:", {
-            text: text.substring(0, 100) + (text.length > 100 ? "..." : ""),
-            itemId,
-            textLength: text.length
-          });
-
-          // 确保文字被记录到缓冲区（备用）
-          if (text && assistantResponseState.current.isActive) {
-            if (!assistantResponseState.current.textBuffer.includes(text)) {
-              assistantResponseState.current.textBuffer += text;
-              console.log("📝 Added missing text from text.done event");
-            }
-          }
-        }
-
-        // —— 内容部分完成 ——
-        if (eventType === "response.content_part.done") {
-          const part = eventData.part;
-          console.log("✅ Content part done:", {
-            partType: part?.type,
-            hasText: !!part?.text,
-            textLength: part?.text?.length || 0
-          });
-
-          if (part?.type === "text" && part.text && assistantResponseState.current.isActive) {
-            // 确保所有文字都在缓冲区中
-            if (!assistantResponseState.current.textBuffer.includes(part.text)) {
-              assistantResponseState.current.textBuffer += part.text;
-              console.log("📝 Added missing text from content part done");
-            }
-          }
-        }
-
-        // —— 助手回应完成（最终记录点） ——
-        if (eventType === "response.done") {
-          console.log("🏁 Response done - processing final text");
-          
-          const state = assistantResponseState.current;
-          let finalText = state.textBuffer.trim();
-          
-          // 如果缓冲区为空，尝试从 response 对象中提取
-          if (!finalText && eventData.response) {
-            console.log("🔍 Extracting text from response object");
-            const response = eventData.response;
-            
-            // 检查 output 数组
-            if (Array.isArray(response.output)) {
-              for (const output of response.output) {
-                if (output?.content) {
-                  const contentArray = Array.isArray(output.content) ? output.content : [output.content];
-                  for (const content of contentArray) {
-                    if (content?.type === "text" && content.text) {
-                      finalText += content.text;
-                    }
-                  }
+        // 方法1: 检查 output 数组
+        if (Array.isArray(response.output)) {
+          for (const output of response.output) {
+            if (output?.content) {
+              const contentArray = Array.isArray(output.content) ? output.content : [output.content];
+              for (const content of contentArray) {
+                if (content?.type === "text" && content.text) {
+                  finalText += content.text;
                 }
               }
             }
           }
-
-          console.log("💾 Final assistant text processing:", {
-            bufferLength: state.textBuffer.length,
-            finalLength: finalText.length,
-            preview: finalText.substring(0, 100) + (finalText.length > 100 ? "..." : ""),
-            responseId: state.responseId,
-            itemId: state.itemId,
-            duration: Date.now() - state.startTime
-          });
-          
-          if (finalText) {
-            const eventId = state.responseId || state.itemId || eventData.response?.id || eventData.id || `assistant_${Date.now()}`;
-            postLog({
-              role: "assistant",
-              content: finalText,
-              eventId,
-            });
-          } else {
-            console.error("❌ No assistant text found to log:", eventData);
-            console.log("🔍 Full response object:", JSON.stringify(eventData.response, null, 2));
+        }
+        
+        // 方法2: 检查其他可能的路径
+        if (!finalText) {
+          // 检查是否有直接的文本字段
+          if (response.text) finalText = response.text;
+          if (response.content && typeof response.content === 'string') {
+            finalText = response.content;
           }
-          
-          // 重置状态
-          assistantResponseState.current = {
-            responseId: null,
-            itemId: null,
-            contentPartId: null,
-            textBuffer: "",
-            isActive: false,
-            startTime: 0,
-          };
         }
+      } catch (error) {
+        console.error("❌ Error extracting text from response:", error);
+      }
+    }
 
-        // —— 错误处理 ——
-        if (eventType === "error") {
-          console.error("❌ Realtime API error:", eventData);
-        }
+    console.log("💾 Final text to log:", {
+      hasText: !!finalText,
+      length: finalText.length,
+      preview: finalText.substring(0, 100)
+    });
+    
+    if (finalText) {
+      const eventId = state.responseId || eventData.response?.id || `assistant_${Date.now()}`;
+      postLog({
+        role: "assistant",
+        content: finalText,
+        eventId,
+      });
+      console.log("✅ Assistant response logged successfully");
+    } else {
+      console.error("❌ No assistant text found to log");
+      console.log("🔍 Full response object:", JSON.stringify(eventData, null, 2));
+    }
+    
+    // 重置状态
+    assistantResponseState.current = {
+      responseId: null,
+      itemId: null,
+      contentPartId: null,
+      textBuffer: "",
+      isActive: false,
+      startTime: 0,
+    };
+  }
+
+  // —— 错误处理 ——
+  if (eventType === "error") {
+    console.error("❌ Realtime API error:", eventData);
+  }
+});
 
         // —— 调试：记录所有其他事件 ——
         if (!["session.created", "session.updated", "input_audio_buffer.speech_started", 
