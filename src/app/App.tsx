@@ -10719,8 +10719,7 @@ function AppContent() {
   // 防止重复记录的 Set
   const loggedEventIds = useRef<Set<string>>(new Set());
 
-  // 辅助函数：从各种内容格式中提取文字
-  const extractTextFromContent = (content: any): string => {
+  function extractTextFromContent(content: any): string {
     if (!content) return "";
     if (typeof content === "string") return content;
     if (Array.isArray(content)) {
@@ -10739,7 +10738,7 @@ function AppContent() {
       if (typeof content.content === "string") return content.content;
     }
     return "";
-  };
+  }
 
   async function postLog(log: { role: "user" | "assistant" | "system"; content: string; eventId?: string }) {
     if (!userId || !sessionId || !log.content?.trim()) {
@@ -10959,16 +10958,7 @@ function AppContent() {
               role: "user", 
               content: transcript.trim(), 
               eventId 
-          }
-
-          console.log("💾 Final assistant text processing:", {
-            bufferLength: state.textBuffer.length,
-            finalLength: finalText.length,
-            preview: finalText.substring(0, 100) + (finalText.length > 100 ? "..." : ""),
-            responseId: state.responseId,
-            itemId: state.itemId,
-            duration: Date.now() - state.startTime
-          }););
+            });
           } else {
             console.warn("⚠️ Empty transcript received");
           }
@@ -11124,14 +11114,16 @@ function AppContent() {
                 }
               }
             }
-            
-            // 如果还是没有文字，使用辅助函数提取
-            if (!finalText.trim()) {
-              finalText = extractTextFromContent(response.content) || 
-                        response.text || 
-                        response.transcript || 
-                        "";
-            }
+          }
+
+          console.log("💾 Final assistant text processing:", {
+            bufferLength: state.textBuffer.length,
+            finalLength: finalText.length,
+            preview: finalText.substring(0, 100) + (finalText.length > 100 ? "..." : ""),
+            responseId: state.responseId,
+            itemId: state.itemId,
+            duration: Date.now() - state.startTime
+          });
           
           if (finalText) {
             const eventId = state.responseId || state.itemId || eventData.response?.id || eventData.id || `assistant_${Date.now()}`;
@@ -11162,15 +11154,11 @@ function AppContent() {
         }
 
         // —— 调试：记录所有其他事件 ——
-        const knownEvents = [
-          "session.created", "session.updated", "input_audio_buffer.speech_started", 
-          "input_audio_buffer.speech_stopped", "input_audio_buffer.committed",
-          "conversation.item.input_audio_transcription.completed", "response.created",
-          "conversation.item.created", "response.content_part.added", "response.text.delta",
-          "response.text.done", "response.content_part.done", "response.done"
-        ];
-        
-        if (!knownEvents.includes(eventType)) {
+        if (!["session.created", "session.updated", "input_audio_buffer.speech_started", 
+              "input_audio_buffer.speech_stopped", "input_audio_buffer.committed",
+              "conversation.item.input_audio_transcription.completed", "response.created",
+              "conversation.item.created", "response.content_part.added", "response.text.delta",
+              "response.text.done", "response.content_part.done", "response.done"].includes(eventType)) {
           console.log("🔍 Other event:", eventType, eventData);
         }
       });
