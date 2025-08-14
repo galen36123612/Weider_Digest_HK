@@ -9994,7 +9994,7 @@ export default App;*/
 
 // 0814 V1 try to fixing the assist reply log
 
-"use client";
+/*"use client";
 
 import React, { useEffect, useRef, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
@@ -10579,6 +10579,782 @@ function AppContent() {
   }, []);
 
   // 移除了备用的 Transcript 监测逻辑，因为现在主要逻辑已经很完整了
+
+  return (
+    <div className="text-base flex flex-col bg-gray-100 text-gray-800 relative" style={{ height: "100dvh", maxHeight: "100dvh" }}>
+      <div className="p-3 sm:p-5 text-lg font-semibold flex justify-between items-center flex-shrink-0 border-b border-gray-200">
+        <div className="flex items-center cursor-pointer" onClick={() => window.location.reload()}>
+          <div>
+            <Image src="/Weider_logo_1.png" alt="Weider Logo" width={40} height={40} className="mr-2" />
+          </div>
+          <div>AI 营养师</div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleMicrophoneClick}
+            className={`w-12 h-12 rounded-full flex items-center justify-center font-medium transition-all duration-200 relative ${
+              isPTTActive ? "bg-blue-500 text-white hover:bg-blue-600 shadow-md animate-pulse" : "bg-green-500 text-white hover:bg-green-600 shadow-md animate-pulse"
+            }`}
+            title={isOutputAudioBufferActive ? "点击打断 AI 讲话" : isPTTActive ? "点击切换到持续对话模式" : "持续对话模式"}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
+              <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+            </svg>
+            {!isPTTActive && isListening && !isOutputAudioBufferActive && (
+              <div className="absolute -top-1 -right-1">
+                <div className="w-3 h-3 bg-green-400 rounded-full animate-ping"></div>
+                <div className="absolute inset-0 w-3 h-3 bg-green-500 rounded-full"></div>
+              </div>
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className="flex flex-1 gap-2 px-2 overflow-hidden relative min-h-0">
+        <Transcript
+          userText={userText}
+          setUserText={setUserText}
+          onSendMessage={handleSendTextMessage}
+          downloadRecording={downloadRecording}
+          canSend={sessionStatus === "CONNECTED" && dataChannel?.readyState === "open"}
+          handleTalkButtonDown={handleTalkButtonDown}
+          handleTalkButtonUp={handleTalkButtonUp}
+          isPTTUserSpeaking={isPTTUserSpeaking}
+          isPTTActive={isPTTActive}
+        />
+        <Events isExpanded={isEventsPaneExpanded} />
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center h-screen">
+          <div className="text-lg">载入中...</div>
+        </div>
+      }
+    >
+      <AppContent />
+    </Suspense>
+  );
+}
+
+export default App;*/
+
+// 0814 V2 try to fixing the log not assist reply problem
+
+"use client";
+
+import React, { useEffect, useRef, useState, Suspense } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import Image from "next/image";
+
+import Transcript from "./components/Transcript";
+import Events from "./components/Events";
+
+import { AgentConfig, SessionStatus } from "@/app/types";
+import { useTranscript } from "@/app/contexts/TranscriptContext";
+import { useEvent } from "@/app/contexts/EventContext";
+import { useHandleServerEvent } from "./hooks/useHandleServerEvent";
+import { allAgentSets, defaultAgentSetKey } from "@/app/agentConfigs";
+import useAudioDownload from "./hooks/useAudioDownload";
+
+function AppContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  function setSearchParam(key: string, value: string) {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set(key, value);
+    router.replace(`?${params.toString()}`);
+  }
+
+  const { transcriptItems } = useTranscript();
+  const { logClientEvent, logServerEvent } = useEvent();
+
+  const [selectedAgentName, setSelectedAgentName] = useState<string>("");
+  const [selectedAgentConfigSet, setSelectedAgentConfigSet] = useState<AgentConfig[] | null>(null);
+
+  const [dataChannel, setDataChannel] = useState<RTCDataChannel | null>(null);
+  const peerConnection = useRef<RTCPeerConnection | null>(null);
+  const audioElement = useRef<HTMLAudioElement | null>(null);
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus>("DISCONNECTED");
+
+  const [isEventsPaneExpanded, setIsEventsPaneExpanded] = useState<boolean>(false);
+  const [userText, setUserText] = useState<string>("");
+  const [isPTTActive, setIsPTTActive] = useState<boolean>(false);
+  const [isPTTUserSpeaking, setIsPTTUserSpeaking] = useState<boolean>(false);
+  const [isAudioPlaybackEnabled, setIsAudioPlaybackEnabled] = useState<boolean>(true);
+  const [isListening, setIsListening] = useState<boolean>(false);
+  const [isOutputAudioBufferActive, setIsOutputAudioBufferActive] = useState<boolean>(false);
+
+  const { startRecording, stopRecording, downloadRecording } = useAudioDownload();
+
+  // ===== 改进的日志记录状态管理 =====
+  const [userId, setUserId] = useState<string>("");
+  const [sessionId, setSessionId] = useState<string>("");
+  
+  // 用于累积助手回应的状态
+  const assistantResponseState = useRef<{
+    responseId: string | null;
+    itemId: string | null;
+    contentPartId: string | null;
+    textBuffer: string;
+    isActive: boolean;
+    startTime: number;
+  }>({
+    responseId: null,
+    itemId: null,
+    contentPartId: null,
+    textBuffer: "",
+    isActive: false,
+    startTime: 0,
+  });
+
+  // 防止重复记录的 Set
+  const loggedEventIds = useRef<Set<string>>(new Set());
+
+  function extractTextFromContent(content: any): string {
+    if (!content) return "";
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((c: any) =>
+          typeof c === "string"
+            ? c
+            : c?.text ?? c?.value ?? (typeof c?.content === "string" ? c.content : "")
+        )
+        .join(" ")
+        .trim();
+    }
+    if (typeof content === "object") {
+      if (typeof content.text === "string") return content.text;
+      if (typeof content.value === "string") return content.value;
+      if (typeof content.content === "string") return content.content;
+    }
+    return "";
+  }
+
+  async function postLog(log: { role: "user" | "assistant" | "system"; content: string; eventId?: string }) {
+    if (!userId || !sessionId || !log.content?.trim()) {
+      console.warn("🚫 postLog skipped:", { 
+        hasUserId: !!userId, 
+        hasSessionId: !!sessionId, 
+        hasContent: !!log.content?.trim(),
+        contentPreview: log.content?.substring(0, 50) + "..."
+      });
+      return;
+    }
+
+    // 防止重复记录
+    const eventId = log.eventId || `${log.role}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    if (loggedEventIds.current.has(eventId)) {
+      console.warn("🔄 Duplicate log prevented:", eventId);
+      return;
+    }
+    loggedEventIds.current.add(eventId);
+    
+    const body = JSON.stringify({ ...log, userId, sessionId, eventId });
+    console.log("📝 Posting log:", { 
+      role: log.role, 
+      content: log.content.substring(0, 100) + (log.content.length > 100 ? "..." : ""), 
+      eventId,
+      userId: userId.substring(0, 8) + "...",
+      sessionId: sessionId.substring(0, 8) + "..."
+    });
+    
+    try {
+      if (navigator.sendBeacon) {
+        const success = navigator.sendBeacon("/api/logs", new Blob([body], { type: "application/json" }));
+        if (!success) {
+          console.warn("📡 sendBeacon failed, falling back to fetch");
+          const response = await fetch("/api/logs", { 
+            method: "POST", 
+            headers: { "Content-Type": "application/json" }, 
+            body 
+          });
+          if (!response.ok) {
+            console.error("❌ Log API fetch failed:", response.status, response.statusText);
+          } else {
+            console.log("✅ Log posted successfully via fetch");
+          }
+        } else {
+          console.log("✅ Log posted successfully via sendBeacon");
+        }
+      } else {
+        const response = await fetch("/api/logs", { 
+          method: "POST", 
+          headers: { "Content-Type": "application/json" }, 
+          body 
+        });
+        if (!response.ok) {
+          console.error("❌ Log API responded with error:", response.status, response.statusText);
+        } else {
+          console.log("✅ Log posted successfully");
+        }
+      }
+    } catch (e) {
+      console.error("💥 postLog failed:", e);
+    }
+  }
+
+  const sendClientEvent = (eventObj: any, eventNameSuffix = "") => {
+    if (dataChannel && dataChannel.readyState === "open") {
+      logClientEvent(eventObj, eventNameSuffix);
+      dataChannel.send(JSON.stringify(eventObj));
+    } else {
+      logClientEvent({ attemptedEvent: eventObj.type }, "error.data_channel_not_open");
+      console.error("Failed to send message - no data channel available", eventObj);
+    }
+  };
+
+  const handleServerEventRef = useHandleServerEvent({
+    setSessionStatus,
+    selectedAgentName,
+    selectedAgentConfigSet,
+    sendClientEvent,
+    setSelectedAgentName,
+    setIsOutputAudioBufferActive,
+  });
+
+  useEffect(() => {
+    let finalAgentConfig = searchParams.get("agentConfig");
+    if (!finalAgentConfig || !allAgentSets[finalAgentConfig]) {
+      finalAgentConfig = defaultAgentSetKey;
+      setSearchParam("agentConfig", finalAgentConfig);
+      return;
+    }
+    const agents = allAgentSets[finalAgentConfig];
+    const agentKeyToUse = agents[0]?.name || "";
+    setSelectedAgentName(agentKeyToUse);
+    setSelectedAgentConfigSet(agents);
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (selectedAgentName && sessionStatus === "DISCONNECTED") {
+      startSession();
+    }
+  }, [selectedAgentName]);
+
+  useEffect(() => {
+    if (sessionStatus === "CONNECTED" && selectedAgentConfigSet && selectedAgentName) {
+      updateSession();
+    }
+  }, [selectedAgentConfigSet, selectedAgentName, sessionStatus]);
+
+  useEffect(() => {
+    if (sessionStatus === "CONNECTED") {
+      updateSession();
+    }
+  }, [isPTTActive]);
+
+  async function startSession() {
+    if (sessionStatus !== "DISCONNECTED") return;
+    await connectToRealtime();
+  }
+
+  async function connectToRealtime() {
+    setSessionStatus("CONNECTING");
+    try {
+      // 获取 ephemeral key + userId/sessionId
+      logClientEvent({ url: "/api/session" }, "fetch_session_token_request");
+      const tokenResponse = await fetch("/api/session");
+      const data = await tokenResponse.json();
+      logServerEvent(data, "fetch_session_token_response");
+
+      if (data?.userId) {
+        setUserId(data.userId);
+        console.log("👤 User ID set:", data.userId.substring(0, 8) + "...");
+      }
+      if (data?.sessionId) {
+        setSessionId(data.sessionId);
+        console.log("🔗 Session ID set:", data.sessionId.substring(0, 8) + "...");
+      }
+
+      if (!data.client_secret?.value) {
+        logClientEvent(data, "error.no_ephemeral_key");
+        console.error("No ephemeral key provided by the server");
+        setSessionStatus("DISCONNECTED");
+        return;
+      }
+
+      const EPHEMERAL_KEY = data.client_secret.value;
+
+      // WebRTC 设置
+      const pc = new RTCPeerConnection();
+      peerConnection.current = pc;
+
+      audioElement.current = document.createElement("audio");
+      audioElement.current.autoplay = isAudioPlaybackEnabled;
+      pc.ontrack = (e) => {
+        if (audioElement.current) audioElement.current.srcObject = e.streams[0];
+      };
+
+      const newMs = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      pc.addTrack(newMs.getTracks()[0]);
+
+      const dc = pc.createDataChannel("oai-events");
+      setDataChannel(dc);
+
+      dc.addEventListener("open", () => {
+        logClientEvent({}, "data_channel.open");
+        setSessionStatus("CONNECTED");
+        console.log("🚀 Data channel opened - ready for conversation");
+      });
+      
+      dc.addEventListener("close", () => {
+        logClientEvent({}, "data_channel.close");
+        setSessionStatus("DISCONNECTED");
+      });
+      
+      dc.addEventListener("error", (err: any) => {
+        logClientEvent({ error: err }, "data_channel.error");
+      });
+
+      // ★★★ 核心事件处理逻辑 ★★★
+      dc.addEventListener("message", (e: MessageEvent) => {
+        const eventData: any = JSON.parse(e.data);
+        handleServerEventRef.current(eventData);
+
+        const eventType = String(eventData?.type || "");
+        
+        // 详细记录所有接收到的事件
+        console.log("📨 Event received:", {
+          type: eventType,
+          data: eventData
+        });
+
+        // 处理麦克风状态指示
+        if (eventType === "input_audio_buffer.speech_started") {
+          setIsListening(true);
+          console.log("🎤 User started speaking");
+        }
+        
+        if (eventType === "input_audio_buffer.speech_stopped") {
+          setIsListening(false);
+          console.log("🎤 User stopped speaking");
+        }
+
+        if (eventType === "input_audio_buffer.committed") {
+          setIsListening(false);
+          console.log("🎤 Audio buffer committed");
+        }
+
+        // —— 处理用户语音转文字 ——
+        if (eventType === "conversation.item.input_audio_transcription.completed") {
+          const transcript = eventData.transcript || eventData.text || "";
+          console.log("🗣️ Speech transcription completed:", transcript);
+          
+          if (transcript.trim()) {
+            const eventId = eventData.item_id || eventData.id || `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+            postLog({ 
+              role: "user", 
+              content: transcript.trim(), 
+              eventId 
+            });
+          } else {
+            console.warn("⚠️ Empty transcript received");
+          }
+        }
+
+        // —— 处理用户语音转文字失败 ——
+        if (eventType === "conversation.item.input_audio_transcription.failed") {
+          console.error("❌ Speech transcription failed:", eventData);
+        }
+
+        // —— 助手回应开始 ——
+        if (eventType === "response.created") {
+          const responseId = eventData.response?.id || eventData.id;
+          console.log("🤖 Assistant response created:", responseId);
+          
+          // 重置并初始化助手回应状态
+          assistantResponseState.current = {
+            responseId,
+            itemId: null,
+            contentPartId: null,
+            textBuffer: "",
+            isActive: true,
+            startTime: Date.now(),
+          };
+        }
+
+        // —— 对话项目创建 ——
+        if (eventType === "conversation.item.created") {
+          const item = eventData.item;
+          const itemId = item?.id || eventData.item_id;
+          
+          console.log("📋 Conversation item created:", {
+            itemId,
+            role: item?.role,
+            type: item?.type,
+            status: item?.status
+          });
+
+          // 如果是助手消息项，记录 item ID
+          if (item?.role === "assistant" && assistantResponseState.current.isActive) {
+            assistantResponseState.current.itemId = itemId;
+          }
+        }
+
+        // —— 内容部分添加 ——
+        if (eventType === "response.content_part.added") {
+          const part = eventData.part;
+          const itemId = eventData.item_id;
+          const partId = part?.id;
+          
+          console.log("📝 Content part added:", {
+            itemId,
+            partId,
+            partType: part?.type,
+            hasText: !!part?.text
+          });
+
+          if (part?.type === "text" && assistantResponseState.current.isActive) {
+            assistantResponseState.current.itemId = itemId;
+            assistantResponseState.current.contentPartId = partId;
+            
+            // 如果 part 已经有文字，先记录
+            if (part.text) {
+              assistantResponseState.current.textBuffer += part.text;
+              console.log("📄 Initial text from content part:", part.text);
+            }
+          }
+        }
+
+        // —— 文字增量（这是最重要的事件） ——
+        if (eventType === "response.text.delta") {
+          const delta = eventData.delta || "";
+          const itemId = eventData.item_id;
+          const contentIndex = eventData.content_index;
+          
+          console.log("📄 Text delta received:", {
+            delta: delta.substring(0, 100) + (delta.length > 100 ? "..." : ""),
+            itemId,
+            contentIndex,
+            deltaLength: delta.length
+          });
+
+          if (assistantResponseState.current.isActive) {
+            assistantResponseState.current.textBuffer += delta;
+            assistantResponseState.current.itemId = itemId || assistantResponseState.current.itemId;
+            
+            console.log("📊 Current buffer length:", assistantResponseState.current.textBuffer.length);
+          } else {
+            console.warn("⚠️ Received text delta but assistant response not active");
+          }
+        }
+
+        // —— 文字完成 ——
+        if (eventType === "response.text.done") {
+          const text = eventData.text || "";
+          const itemId = eventData.item_id;
+          
+          console.log("✅ Text done:", {
+            text: text.substring(0, 100) + (text.length > 100 ? "..." : ""),
+            itemId,
+            textLength: text.length
+          });
+
+          // 确保文字被记录到缓冲区（备用）
+          if (text && assistantResponseState.current.isActive) {
+            if (!assistantResponseState.current.textBuffer.includes(text)) {
+              assistantResponseState.current.textBuffer += text;
+              console.log("📝 Added missing text from text.done event");
+            }
+          }
+        }
+
+        // —— 内容部分完成 ——
+        if (eventType === "response.content_part.done") {
+          const part = eventData.part;
+          console.log("✅ Content part done:", {
+            partType: part?.type,
+            hasText: !!part?.text,
+            textLength: part?.text?.length || 0
+          });
+
+          if (part?.type === "text" && part.text && assistantResponseState.current.isActive) {
+            // 确保所有文字都在缓冲区中
+            if (!assistantResponseState.current.textBuffer.includes(part.text)) {
+              assistantResponseState.current.textBuffer += part.text;
+              console.log("📝 Added missing text from content part done");
+            }
+          }
+        }
+
+        // —— 助手回应完成（最终记录点） ——
+        if (eventType === "response.done") {
+          console.log("🏁 Response done - processing final text");
+          
+          const state = assistantResponseState.current;
+          let finalText = state.textBuffer.trim();
+          
+          // 如果缓冲区为空，尝试从 response 对象中提取
+          if (!finalText && eventData.response) {
+            console.log("🔍 Extracting text from response object");
+            const response = eventData.response;
+            
+            // 检查 output 数组
+            if (Array.isArray(response.output)) {
+              for (const output of response.output) {
+                if (output?.content) {
+                  const contentArray = Array.isArray(output.content) ? output.content : [output.content];
+                  for (const content of contentArray) {
+                    if (content?.type === "text" && content.text) {
+                      finalText += content.text;
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          console.log("💾 Final assistant text processing:", {
+            bufferLength: state.textBuffer.length,
+            finalLength: finalText.length,
+            preview: finalText.substring(0, 100) + (finalText.length > 100 ? "..." : ""),
+            responseId: state.responseId,
+            itemId: state.itemId,
+            duration: Date.now() - state.startTime
+          });
+          
+          if (finalText) {
+            const eventId = state.responseId || state.itemId || eventData.response?.id || eventData.id || `assistant_${Date.now()}`;
+            postLog({
+              role: "assistant",
+              content: finalText,
+              eventId,
+            });
+          } else {
+            console.error("❌ No assistant text found to log:", eventData);
+            console.log("🔍 Full response object:", JSON.stringify(eventData.response, null, 2));
+          }
+          
+          // 重置状态
+          assistantResponseState.current = {
+            responseId: null,
+            itemId: null,
+            contentPartId: null,
+            textBuffer: "",
+            isActive: false,
+            startTime: 0,
+          };
+        }
+
+        // —— 错误处理 ——
+        if (eventType === "error") {
+          console.error("❌ Realtime API error:", eventData);
+        }
+
+        // —— 调试：记录所有其他事件 ——
+        if (!["session.created", "session.updated", "input_audio_buffer.speech_started", 
+              "input_audio_buffer.speech_stopped", "input_audio_buffer.committed",
+              "conversation.item.input_audio_transcription.completed", "response.created",
+              "conversation.item.created", "response.content_part.added", "response.text.delta",
+              "response.text.done", "response.content_part.done", "response.done"].includes(eventType)) {
+          console.log("🔍 Other event:", eventType, eventData);
+        }
+      });
+
+      // 创建 WebRTC offer
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const baseUrl = "https://api.openai.com/v1/realtime";
+      const model = "gpt-4o-realtime-preview-2024-12-17";
+      const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
+        method: "POST",
+        body: offer.sdp,
+        headers: { Authorization: `Bearer ${EPHEMERAL_KEY}`, "Content-Type": "application/sdp" },
+      });
+      await pc.setRemoteDescription({ type: "answer" as RTCSdpType, sdp: await sdpResponse.text() });
+      
+      console.log("🎯 WebRTC connection established");
+    } catch (err) {
+      console.error("💥 Error connecting to realtime:", err);
+      setSessionStatus("DISCONNECTED");
+    }
+  }
+
+  function stopSession() {
+    if (dataChannel) {
+      dataChannel.close();
+      setDataChannel(null);
+    }
+    if (peerConnection.current) {
+      peerConnection.current.getSenders().forEach((sender) => sender.track && sender.track.stop());
+      peerConnection.current.close();
+      peerConnection.current = null;
+    }
+    setSessionStatus("DISCONNECTED");
+    setIsListening(false);
+    
+    // 重置日志状态
+    assistantResponseState.current = {
+      responseId: null,
+      itemId: null,
+      contentPartId: null,
+      textBuffer: "",
+      isActive: false,
+      startTime: 0,
+    };
+    loggedEventIds.current.clear();
+  }
+
+  const updateSession = () => {
+    sendClientEvent({ type: "input_audio_buffer.clear" }, "clear audio buffer on session update");
+    const currentAgent = selectedAgentConfigSet?.find((a) => a.name === selectedAgentName);
+
+    const turnDetection = isPTTActive
+      ? null
+      : {
+          type: "server_vad",
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 800,
+          create_response: true,
+        };
+
+    const instructions = currentAgent?.instructions || "";
+    const tools = currentAgent?.tools || [];
+
+    const sessionUpdateEvent = {
+      type: "session.update",
+      session: {
+        modalities: ["text", "audio"],
+        instructions,
+        voice: "shimmer",
+        input_audio_transcription: { model: "whisper-1" },
+        turn_detection: turnDetection,
+        tools,
+      },
+    };
+    sendClientEvent(sessionUpdateEvent);
+  };
+
+  const cancelAssistantSpeech = async () => {
+    const mostRecentAssistantMessage = [...transcriptItems].reverse().find((item) => item.role === "assistant");
+    if (!mostRecentAssistantMessage) {
+      console.warn("can't cancel, no recent assistant message found");
+      return;
+    }
+    if (mostRecentAssistantMessage.status === "IN_PROGRESS") {
+      sendClientEvent({ type: "response.cancel" }, "(cancel due to user interruption)");
+    }
+    if (isOutputAudioBufferActive) {
+      sendClientEvent({ type: "output_audio_buffer.clear" }, "(cancel due to user interruption)");
+    }
+  };
+
+  const handleSendTextMessage = () => {
+    const textToSend = userText.trim();
+    if (!textToSend) return;
+    
+    console.log("💬 Sending text message:", textToSend);
+    cancelAssistantSpeech();
+
+    sendClientEvent(
+      {
+        type: "conversation.item.create",
+        item: { type: "message", role: "user", content: [{ type: "input_text", text: textToSend }] },
+      },
+      "(send user text message)"
+    );
+
+    // 立即记录用户文字消息
+    const eventId = `text_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    postLog({ role: "user", content: textToSend, eventId });
+
+    setUserText("");
+    sendClientEvent({ type: "response.create" }, "(trigger response)");
+  };
+
+  const handleTalkButtonDown = () => {
+    if (sessionStatus !== "CONNECTED" || dataChannel?.readyState !== "open") return;
+    console.log("🎤 PTT button pressed down");
+    cancelAssistantSpeech();
+    setIsPTTUserSpeaking(true);
+    setIsListening(true);
+    sendClientEvent({ type: "input_audio_buffer.clear" }, "clear PTT buffer");
+  };
+
+  const handleTalkButtonUp = () => {
+    if (sessionStatus !== "CONNECTED" || dataChannel?.readyState !== "open" || !isPTTUserSpeaking) return;
+    console.log("🎤 PTT button released");
+    setIsPTTUserSpeaking(false);
+    setIsListening(false);
+    sendClientEvent({ type: "input_audio_buffer.commit" }, "commit PTT");
+    sendClientEvent({ type: "response.create" }, "trigger response PTT");
+  };
+
+  const handleMicrophoneClick = () => {
+    if (isOutputAudioBufferActive) {
+      console.log("打断 ChatGPT 讲话");
+      cancelAssistantSpeech();
+      return;
+    }
+    toggleConversationMode();
+  };
+
+  const toggleConversationMode = () => {
+    const newMode = !isPTTActive;
+    setIsPTTActive(newMode);
+    localStorage.setItem("conversationMode", newMode ? "PTT" : "VAD");
+    console.log(`切换到${newMode ? "PTT" : "VAD"}模式`);
+  };
+
+  useEffect(() => {
+    setIsPTTActive(false);
+    localStorage.setItem("conversationMode", "VAD");
+
+    const storedLogsExpanded = localStorage.getItem("logsExpanded");
+    if (storedLogsExpanded) setIsEventsPaneExpanded(storedLogsExpanded === "true");
+    else localStorage.setItem("logsExpanded", "false");
+
+    const storedAudioPlaybackEnabled = localStorage.getItem("audioPlaybackEnabled");
+    if (storedAudioPlaybackEnabled) setIsAudioPlaybackEnabled(storedAudioPlaybackEnabled === "true");
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("logsExpanded", isEventsPaneExpanded.toString());
+  }, [isEventsPaneExpanded]);
+
+  useEffect(() => {
+    localStorage.setItem("audioPlaybackEnabled", isAudioPlaybackEnabled.toString());
+  }, [isAudioPlaybackEnabled]);
+
+  useEffect(() => {
+    if (audioElement.current) {
+      if (isAudioPlaybackEnabled) {
+        audioElement.current.play().catch((err) => console.warn("Autoplay may be blocked by browser:", err));
+      } else {
+        audioElement.current.pause();
+      }
+    }
+  }, [isAudioPlaybackEnabled]);
+
+  useEffect(() => {
+    if (sessionStatus === "CONNECTED" && audioElement.current?.srcObject) {
+      const remoteStream = audioElement.current.srcObject as MediaStream;
+      startRecording(remoteStream);
+    }
+    return () => {
+      stopRecording();
+    };
+  }, [sessionStatus]);
+
+  useEffect(() => {
+    return () => {
+      stopSession();
+    };
+  }, []);
 
   return (
     <div className="text-base flex flex-col bg-gray-100 text-gray-800 relative" style={{ height: "100dvh", maxHeight: "100dvh" }}>
