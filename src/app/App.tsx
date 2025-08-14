@@ -10959,7 +10959,16 @@ function AppContent() {
               role: "user", 
               content: transcript.trim(), 
               eventId 
-            });
+          }
+
+          console.log("💾 Final assistant text processing:", {
+            bufferLength: state.textBuffer.length,
+            finalLength: finalText.length,
+            preview: finalText.substring(0, 100) + (finalText.length > 100 ? "..." : ""),
+            responseId: state.responseId,
+            itemId: state.itemId,
+            duration: Date.now() - state.startTime
+          }););
           } else {
             console.warn("⚠️ Empty transcript received");
           }
@@ -11153,11 +11162,15 @@ function AppContent() {
         }
 
         // —— 调试：记录所有其他事件 ——
-        if (!["session.created", "session.updated", "input_audio_buffer.speech_started", 
-              "input_audio_buffer.speech_stopped", "input_audio_buffer.committed",
-              "conversation.item.input_audio_transcription.completed", "response.created",
-              "conversation.item.created", "response.content_part.added", "response.text.delta",
-              "response.text.done", "response.content_part.done", "response.done"].includes(eventType)) {
+        const knownEvents = [
+          "session.created", "session.updated", "input_audio_buffer.speech_started", 
+          "input_audio_buffer.speech_stopped", "input_audio_buffer.committed",
+          "conversation.item.input_audio_transcription.completed", "response.created",
+          "conversation.item.created", "response.content_part.added", "response.text.delta",
+          "response.text.done", "response.content_part.done", "response.done"
+        ];
+        
+        if (!knownEvents.includes(eventType)) {
           console.log("🔍 Other event:", eventType, eventData);
         }
       });
