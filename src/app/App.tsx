@@ -10719,7 +10719,8 @@ function AppContent() {
   // 防止重复记录的 Set
   const loggedEventIds = useRef<Set<string>>(new Set());
 
-  function extractTextFromContent(content: any): string {
+  // 辅助函数：从各种内容格式中提取文字
+  const extractTextFromContent = (content: any): string => {
     if (!content) return "";
     if (typeof content === "string") return content;
     if (Array.isArray(content)) {
@@ -10738,7 +10739,7 @@ function AppContent() {
       if (typeof content.content === "string") return content.content;
     }
     return "";
-  }
+  };
 
   async function postLog(log: { role: "user" | "assistant" | "system"; content: string; eventId?: string }) {
     if (!userId || !sessionId || !log.content?.trim()) {
@@ -11114,16 +11115,14 @@ function AppContent() {
                 }
               }
             }
-          }
-
-          console.log("💾 Final assistant text processing:", {
-            bufferLength: state.textBuffer.length,
-            finalLength: finalText.length,
-            preview: finalText.substring(0, 100) + (finalText.length > 100 ? "..." : ""),
-            responseId: state.responseId,
-            itemId: state.itemId,
-            duration: Date.now() - state.startTime
-          });
+            
+            // 如果还是没有文字，使用辅助函数提取
+            if (!finalText.trim()) {
+              finalText = extractTextFromContent(response.content) || 
+                        response.text || 
+                        response.transcript || 
+                        "";
+            }
           
           if (finalText) {
             const eventId = state.responseId || state.itemId || eventData.response?.id || eventData.id || `assistant_${Date.now()}`;
