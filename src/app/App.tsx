@@ -12148,11 +12148,12 @@ function AppContent() {
   const [userId, setUserId] = useState<string>("");
   const [sessionId, setSessionId] = useState<string>("");
   
-  // 簡化的助手回應狀態
+  // 🛠️ 更新的助手回應狀態（新增 audioTranscriptBuffer）
   const assistantResponseState = useRef({
     isActive: false,
     responseId: null as string | null,
     textBuffer: "",
+    audioTranscriptBuffer: "", // 新增：專門收集音頻轉錄
     startTime: 0,
   });
 
@@ -12165,7 +12166,9 @@ function AppContent() {
         hasUserId: !!userId, 
         hasSessionId: !!sessionId, 
         hasContent: !!log.content?.trim(),
-        contentPreview: log.content?.substring(0, 50) + "..."
+        contentPreview: log.content?.substring(0, 50) + "...",
+        userId: userId ? userId.substring(0, 8) + "..." : "empty",
+        sessionId: sessionId ? sessionId.substring(0, 8) + "..." : "empty"
       });
       return;
     }
@@ -12242,7 +12245,7 @@ function AppContent() {
             }
             // 🎵 音頻內容的轉錄文字
             else if (contentItem?.type === "audio" && contentItem.transcript) {
-              console.log("🎵 Found audio transcript:", contentItem.transcript);
+              console.log("🎵 Found audio transcript in output:", contentItem.transcript);
               text += contentItem.transcript;
             }
           }
@@ -12368,7 +12371,7 @@ function AppContent() {
         logClientEvent({ error: err }, "data_channel.error");
       });
 
-      // ★★★ 改進的事件處理邏輯 ★★★
+      // ★★★ 完全修正的事件處理邏輯 ★★★
       dc.addEventListener("message", (e: MessageEvent) => {
         const eventData: any = JSON.parse(e.data);
         handleServerEventRef.current(eventData);
@@ -12376,14 +12379,20 @@ function AppContent() {
         const eventType = String(eventData?.type || "");
         console.log("📨 Event:", eventType);
 
-        // 1️⃣ 用戶語音轉文字
+        // 1️⃣ 用戶語音轉文字（修正：確保 userId 和 sessionId 存在）
         if (eventType === "conversation.item.input_audio_transcription.completed") {
           const transcript = eventData.transcript || eventData.text || "";
           console.log("🗣️ User speech:", transcript);
           
-          if (transcript.trim()) {
+          if (transcript.trim() && userId && sessionId) {
             const eventId = eventData.item_id || `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`;
             postLog({ role: "user", content: transcript.trim(), eventId });
+          } else {
+            console.warn("🚫 User speech not logged:", { 
+              hasTranscript: !!transcript.trim(),
+              hasUserId: !!userId,
+              hasSessionId: !!sessionId 
+            });
           }
         }
 
@@ -12396,11 +12405,35 @@ function AppContent() {
             isActive: true,
             responseId,
             textBuffer: "",
+            audioTranscriptBuffer: "", // 重置音頻轉錄緩存
             startTime: Date.now(),
           };
         }
 
-        // 3️⃣ 收集所有可能的文字增量事件
+        // 3️⃣ 🎵 新增：音頻轉錄增量事件處理
+        if (eventType === "response.audio_transcript.delta") {
+          const delta = eventData.delta || "";
+          
+          if (delta && assistantResponseState.current.isActive) {
+            assistantResponseState.current.audioTranscriptBuffer += delta;
+            console.log(`🎵 Added audio transcript delta (${delta.length} chars), total: ${assistantResponseState.current.audioTranscriptBuffer.length}`);
+          }
+        }
+
+        // 4️⃣ 🎵 新增：音頻轉錄完成事件處理
+        if (eventType === "response.audio_transcript.done") {
+          const transcript = eventData.transcript || "";
+          
+          if (transcript && assistantResponseState.current.isActive) {
+            // 確保完整轉錄都在 buffer 中
+            if (assistantResponseState.current.audioTranscriptBuffer.length < transcript.length) {
+              console.log("🔄 Updating audio transcript buffer with complete text");
+              assistantResponseState.current.audioTranscriptBuffer = transcript;
+            }
+          }
+        }
+
+        // 5️⃣ 收集所有可能的文字增量事件
         const TEXT_DELTA_EVENTS = [
           "response.text.delta",
           "response.output_text.delta", 
@@ -12417,7 +12450,7 @@ function AppContent() {
           }
         }
 
-        // 4️⃣ 文字完成事件 - 作為備用檢查
+        // 6️⃣ 文字完成事件 - 作為備用檢查
         const TEXT_DONE_EVENTS = [
           "response.text.done",
           "response.output_text.done",
@@ -12436,7 +12469,7 @@ function AppContent() {
           }
         }
 
-        // 5️⃣ 內容部分完成 - 另一個備用提取點
+        // 7️⃣ 內容部分完成 - 另一個備用提取點
         if (eventType === "response.content_part.done") {
           const part = eventData.part;
           
@@ -12449,7 +12482,7 @@ function AppContent() {
           }
         }
 
-        // 6️⃣ 助手回應完成 - 最終記錄點（最重要）
+        // 8️⃣ 助手回應完成 - 最終記錄點（最重要）
         const RESPONSE_DONE_EVENTS = ["response.done", "response.completed"];
         
         if (RESPONSE_DONE_EVENTS.includes(eventType)) {
@@ -12459,12 +12492,20 @@ function AppContent() {
           
           // 🚨 多層級備用提取策略
           if (!finalText) {
-            console.warn("⚠️ Buffer empty, trying fallback extraction");
+            console.warn("⚠️ Text buffer empty, trying fallback extraction");
+            
+            // 🎵 優先使用音頻轉錄
+            if (assistantResponseState.current.audioTranscriptBuffer) {
+              finalText = assistantResponseState.current.audioTranscriptBuffer.trim();
+              console.log("🎵 Using audio transcript as primary text");
+            }
             
             // 備用 1: 從 response.output 提取
-            const response = eventData.response;
-            if (response?.output) {
-              finalText = extractTextFromOutput(response.output);
+            if (!finalText) {
+              const response = eventData.response;
+              if (response?.output) {
+                finalText = extractTextFromOutput(response.output);
+              }
             }
             
             // 備用 2: 直接從事件數據提取
@@ -12476,7 +12517,7 @@ function AppContent() {
           }
 
           // 記錄助手回應
-          if (finalText) {
+          if (finalText && userId && sessionId) {
             const eventId = assistantResponseState.current.responseId || `assistant_${Date.now()}`;
             const duration = Date.now() - assistantResponseState.current.startTime;
             
@@ -12490,14 +12531,22 @@ function AppContent() {
           } else {
             // 🚨 如果完全沒有文字，記錄詳細的調試資訊
             console.error("❌ No assistant text found after all fallback attempts!");
-            console.log("🔍 Full event data:", JSON.stringify(eventData, null, 2));
+            console.log("🔍 Debug info:", { 
+              hasUserId: !!userId,
+              hasSessionId: !!sessionId,
+              finalTextLength: finalText.length,
+              textBuffer: assistantResponseState.current.textBuffer,
+              audioBuffer: assistantResponseState.current.audioTranscriptBuffer
+            });
             
             // 記錄一個錯誤事件用於調試
-            postLog({
-              role: "system", 
-              content: `[ERROR] Assistant response completed but no text extracted. Event: ${eventType}`,
-              eventId: `error_${Date.now()}`
-            });
+            if (userId && sessionId) {
+              postLog({
+                role: "system", 
+                content: `[ERROR] Assistant response completed but no text extracted. Event: ${eventType}`,
+                eventId: `error_${Date.now()}`
+              });
+            }
           }
 
           // 重置狀態
@@ -12505,11 +12554,12 @@ function AppContent() {
             isActive: false,
             responseId: null,
             textBuffer: "",
+            audioTranscriptBuffer: "", // 重置音頻轉錄緩存
             startTime: 0,
           };
         }
 
-        // 7️⃣ 麥克風狀態處理
+        // 9️⃣ 麥克風狀態處理
         if (eventType === "input_audio_buffer.speech_started") {
           setIsListening(true);
           console.log("🎤 User started speaking");
@@ -12520,12 +12570,12 @@ function AppContent() {
           console.log("🎤 User stopped speaking");
         }
 
-        // 8️⃣ 錯誤處理
+        // 🔟 錯誤處理
         if (eventType === "error") {
           console.error("❌ Realtime API error:", eventData);
         }
 
-        // 🔍 調試：記錄其他未處理的事件
+        // 🔍 調試：記錄其他未處理的事件（更新已知事件列表）
         const KNOWN_EVENTS = [
           "session.created", "session.updated", "input_audio_buffer.speech_started",
           "input_audio_buffer.speech_stopped", "input_audio_buffer.committed",
@@ -12533,7 +12583,10 @@ function AppContent() {
           "conversation.item.created", "response.content_part.added", "response.text.delta",
           "response.output_text.delta", "output_text.delta", "response.text.done",
           "response.output_text.done", "output_text.done", "response.content_part.done",
-          "response.done", "response.completed"
+          "response.done", "response.completed",
+          // 新增音頻相關事件
+          "response.audio_transcript.delta", "response.audio_transcript.done",
+          "response.audio.done", "response.output_item.done"
         ];
         
         if (!KNOWN_EVENTS.includes(eventType)) {
@@ -12579,6 +12632,7 @@ function AppContent() {
       isActive: false,
       responseId: null,
       textBuffer: "",
+      audioTranscriptBuffer: "", // 重置音頻轉錄緩存
       startTime: 0,
     };
     loggedEventIds.current.clear();
