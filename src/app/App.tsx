@@ -12384,15 +12384,19 @@ function AppContent() {
           const transcript = eventData.transcript || eventData.text || "";
           console.log("🗣️ User speech:", transcript);
           
-          if (transcript.trim() && userId && sessionId) {
-            const eventId = eventData.item_id || `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-            postLog({ role: "user", content: transcript.trim(), eventId });
-          } else {
-            console.warn("🚫 User speech not logged:", { 
-              hasTranscript: !!transcript.trim(),
-              hasUserId: !!userId,
-              hasSessionId: !!sessionId 
-            });
+          if (transcript.trim()) {
+            if (userId && sessionId) {
+              const eventId = eventData.item_id || `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+              postLog({ role: "user", content: transcript.trim(), eventId });
+            } else {
+              console.warn("🚫 User speech not logged - missing IDs:", { 
+                transcript: transcript.substring(0, 50) + "...",
+                hasUserId: !!userId,
+                hasSessionId: !!sessionId,
+                userIdPreview: userId ? userId.substring(0, 8) + "..." : "empty",
+                sessionIdPreview: sessionId ? sessionId.substring(0, 8) + "..." : "empty"
+              });
+            }
           }
         }
 
@@ -12495,9 +12499,9 @@ function AppContent() {
             console.warn("⚠️ Text buffer empty, trying fallback extraction");
             
             // 🎵 優先使用音頻轉錄
-            if (assistantResponseState.current.audioTranscriptBuffer) {
+            if (assistantResponseState.current.audioTranscriptBuffer.trim()) {
               finalText = assistantResponseState.current.audioTranscriptBuffer.trim();
-              console.log("🎵 Using audio transcript as primary text");
+              console.log("🎵 Using audio transcript as primary text:", finalText.substring(0, 50) + "...");
             }
             
             // 備用 1: 從 response.output 提取
@@ -12505,45 +12509,62 @@ function AppContent() {
               const response = eventData.response;
               if (response?.output) {
                 finalText = extractTextFromOutput(response.output);
+                console.log("📦 Extracted from response.output:", finalText.substring(0, 50) + "...");
               }
             }
             
             // 備用 2: 直接從事件數據提取
             if (!finalText) {
               finalText = eventData.text || eventData.content || "";
+              console.log("🔍 Extracted from event data:", finalText.substring(0, 50) + "...");
             }
             
             console.log(`💾 Fallback extraction result: ${finalText.length} chars`);
           }
 
-          // 記錄助手回應
-          if (finalText && userId && sessionId) {
-            const eventId = assistantResponseState.current.responseId || `assistant_${Date.now()}`;
-            const duration = Date.now() - assistantResponseState.current.startTime;
-            
-            console.log(`✅ Logging assistant response: ${finalText.length} chars, ${duration}ms`);
-            
-            postLog({
-              role: "assistant",
-              content: finalText,
-              eventId,
-            });
+          // 記錄助手回應 - 修正條件檢查
+          if (finalText.trim()) {
+            if (userId && sessionId) {
+              const eventId = assistantResponseState.current.responseId || `assistant_${Date.now()}`;
+              const duration = Date.now() - assistantResponseState.current.startTime;
+              
+              console.log(`✅ Logging assistant response: ${finalText.length} chars, ${duration}ms`);
+              console.log(`📝 Content preview: ${finalText.substring(0, 100)}${finalText.length > 100 ? "..." : ""}`);
+              
+              postLog({
+                role: "assistant",
+                content: finalText.trim(),
+                eventId,
+              });
+            } else {
+              console.warn("🚫 Assistant response not logged - missing IDs:", {
+                finalTextLength: finalText.length,
+                contentPreview: finalText.substring(0, 50) + "...",
+                hasUserId: !!userId,
+                hasSessionId: !!sessionId,
+                userIdPreview: userId ? userId.substring(0, 8) + "..." : "empty",
+                sessionIdPreview: sessionId ? sessionId.substring(0, 8) + "..." : "empty"
+              });
+            }
           } else {
             // 🚨 如果完全沒有文字，記錄詳細的調試資訊
             console.error("❌ No assistant text found after all fallback attempts!");
             console.log("🔍 Debug info:", { 
               hasUserId: !!userId,
               hasSessionId: !!sessionId,
-              finalTextLength: finalText.length,
+              textBufferLength: assistantResponseState.current.textBuffer.length,
+              audioBufferLength: assistantResponseState.current.audioTranscriptBuffer.length,
               textBuffer: assistantResponseState.current.textBuffer,
-              audioBuffer: assistantResponseState.current.audioTranscriptBuffer
+              audioBuffer: assistantResponseState.current.audioTranscriptBuffer,
+              eventDataKeys: Object.keys(eventData),
+              responseKeys: eventData.response ? Object.keys(eventData.response) : "no response"
             });
             
             // 記錄一個錯誤事件用於調試
             if (userId && sessionId) {
               postLog({
                 role: "system", 
-                content: `[ERROR] Assistant response completed but no text extracted. Event: ${eventType}`,
+                content: `[ERROR] Assistant response completed but no text extracted. Event: ${eventType}, TextBuffer: ${assistantResponseState.current.textBuffer.length}, AudioBuffer: ${assistantResponseState.current.audioTranscriptBuffer.length}`,
                 eventId: `error_${Date.now()}`
               });
             }
@@ -12579,18 +12600,30 @@ function AppContent() {
         const KNOWN_EVENTS = [
           "session.created", "session.updated", "input_audio_buffer.speech_started",
           "input_audio_buffer.speech_stopped", "input_audio_buffer.committed",
-          "conversation.item.input_audio_transcription.completed", "response.created",
-          "conversation.item.created", "response.content_part.added", "response.text.delta",
-          "response.output_text.delta", "output_text.delta", "response.text.done",
-          "response.output_text.done", "output_text.done", "response.content_part.done",
-          "response.done", "response.completed",
+          "conversation.item.input_audio_transcription.completed", 
+          "conversation.item.input_audio_transcription.failed",
+          "response.created", "conversation.item.created", "response.content_part.added", 
+          "response.text.delta", "response.output_text.delta", "output_text.delta", 
+          "response.text.done", "response.output_text.done", "output_text.done", 
+          "response.content_part.done", "response.done", "response.completed",
           // 新增音頻相關事件
           "response.audio_transcript.delta", "response.audio_transcript.done",
-          "response.audio.done", "response.output_item.done"
+          "response.audio.done", "response.output_item.done", "rate_limits.updated",
+          "output_audio_buffer.stopped", "input_audio_buffer.cleared"
         ];
         
         if (!KNOWN_EVENTS.includes(eventType)) {
           console.log("🔍 Unknown event:", eventType, eventData);
+        }
+
+        // 🚨 特別監控用戶語音相關事件
+        if (eventType.includes("input_audio") || eventType.includes("transcription")) {
+          console.log("🎤 Audio-related event:", eventType, {
+            transcript: eventData.transcript || eventData.text,
+            item_id: eventData.item_id,
+            hasUserId: !!userId,
+            hasSessionId: !!sessionId
+          });
         }
       });
 
