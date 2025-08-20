@@ -14562,28 +14562,30 @@ function AppContent() {
   >([]);
 
   // 🆕 對話配對日誌函數
-  async function logConversationPair(userMsg: { content: string; eventId: string; timestamp: number }, assistantMsg: { content: string; eventId: string; timestamp: number }) {
+  function logConversationPair(userMsg: { content: string; eventId: string; timestamp: number }, assistantMsg: { content: string; eventId: string; timestamp: number }) {
     const pairId = `pair_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     
     // 先記錄用戶訊息
-    await reallyPostLog({ 
+    reallyPostLog({ 
       role: "user", 
       content: userMsg.content, 
       eventId: userMsg.eventId,
       pairId,
       timestamp: userMsg.timestamp
+    }).then(() => {
+      // 再記錄助手回應
+      return reallyPostLog({ 
+        role: "assistant", 
+        content: assistantMsg.content, 
+        eventId: assistantMsg.eventId,
+        pairId,
+        timestamp: assistantMsg.timestamp
+      });
+    }).then(() => {
+      console.log(`📝 Logged conversation pair: Q(${userMsg.content.slice(0, 30)}...) -> A(${assistantMsg.content.slice(0, 30)}...)`);
+    }).catch((error) => {
+      console.error("💥 Error logging conversation pair:", error);
     });
-    
-    // 再記錄助手回應
-    await reallyPostLog({ 
-      role: "assistant", 
-      content: assistantMsg.content, 
-      eventId: assistantMsg.eventId,
-      pairId,
-      timestamp: assistantMsg.timestamp
-    });
-
-    console.log(`📝 Logged conversation pair: Q(${userMsg.content.slice(0, 30)}...) -> A(${assistantMsg.content.slice(0, 30)}...)`);
   }
 
   // 🔧 更新的 reallyPostLog 函數
