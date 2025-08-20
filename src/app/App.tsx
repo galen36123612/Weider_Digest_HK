@@ -14639,7 +14639,7 @@ function AppContent() {
   }
 
   // 保留原本的 postLog（用於系統訊息）
-  async function postLog(log: { role: "user" | "assistant" | "system"; content: string; eventId?: string }) {
+  function postLog(log: { role: "user" | "assistant" | "system"; content: string; eventId?: string }) {
     if (!log.content?.trim()) {
       console.warn("🚫 postLog skipped: empty content");
       return;
@@ -14651,7 +14651,9 @@ function AppContent() {
       console.warn("🔄 Duplicate log prevented (pre-flight):", log.eventId);
       return;
     }
-    await reallyPostLog(log);
+    reallyPostLog(log).catch((error) => {
+      console.error("💥 Error in postLog:", error);
+    });
   }
 
   // 佇列 flush
@@ -14972,16 +14974,18 @@ function AppContent() {
             // 🌟 關鍵改動：配對記錄
             if (conversationState.current.currentUserMessage) {
               // 有配對的用戶訊息，一起記錄
-              await logConversationPair(conversationState.current.currentUserMessage, assistantMsg);
+              logConversationPair(conversationState.current.currentUserMessage, assistantMsg);
               conversationState.current.currentUserMessage = null; // 清除已配對的用戶訊息
             } else {
               // 沒有配對的用戶訊息，單獨記錄助手回應
               console.warn("⚠️ Assistant response without paired user message");
-              await reallyPostLog({ 
+              reallyPostLog({ 
                 role: "assistant", 
                 content: finalText, 
                 eventId: assistantMsg.eventId,
                 timestamp: assistantMsg.timestamp
+              }).catch((error) => {
+                console.error("💥 Error logging orphaned assistant response:", error);
               });
             }
           } else {
