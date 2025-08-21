@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>每日問答報表｜Weider Digest</title>
+  <style>
+    :root {
+      --bg: #f7f7f8;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --border: #e5e7eb;
+      --accent: #2563eb;
+      --accent-weak: #dbeafe;
+      --danger: #ef4444;
+      --ok: #16a34a;
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+      -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 16px; }
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .title { font-weight: 700; font-size: 20px; letter-spacing: 0.3px; }
+    .controls {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px 14px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+    .filters input[type="date"], .filters input[type="text"], .filters select {
+      padding: 8px 10px; border: 1px solid var(--border);
+      border-radius: 8px; background: #fff; color: var(--text);
+    }
+    .btn {
+      padding: 8px 12px; border-radius: 8px; cursor: pointer;
+      border: 1px solid var(--border); background: #fff;
+    }
+    .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn.ghost { background: transparent; }
+    .btn:disabled { opacity: .6; cursor: not-allowed; }
+    .hint { font-size: 12px; color: var(--muted); }
+    .day {
+      margin-top: 14px;
+    }
+    .day .day-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 12px; cursor: pointer;
+    }
+    .day .day-header h3 { margin: 0; font-size: 16px; }
+    .day .day-header .meta { color: var(--muted); font-size: 12px; }
+    .day .day-body { padding: 8px 12px 12px; display: none; }
+    .day.open .day-body { display: block; }
+    .table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    thead th {
+      position: sticky; top: 0; background: #fafafa; z-index: 1;
+      border-bottom: 1px solid var(--border); text-align: left; padding: 10px; white-space: nowrap;
+    }
+    tbody td { border-bottom: 1px solid var(--border); padding: 10px; vertical-align: top; }
+    tbody tr:nth-child(even) { background: #fcfcfc; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .content {
+      white-space: pre-wrap; word-break: break-word; line-height: 1.4;
+      max-width: 560px;
+    }
+    .role-badge {
+      display: inline-block; font-size: 12px; padding: 2px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
+    }
+    .role-user { background: #f1f5f9; }
+    .role-assistant { background: var(--accent-weak); }
+    .pill { padding: 2px 6px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); background: #fff; }
+    .pill.ok { border-color: #bbf7d0; background: #ecfdf5; color: var(--ok); }
+    .pill.warn { border-color: #fde68a; background: #fffbeb; color: #b45309; }
+    .pill.err { border-color: #fecaca; background: #fef2f2; color: var(--danger); }
+    .tools { display: flex; gap: 6px; flex-wrap: wrap; }
+    .copy-btn {
+      font-size: 12px; padding: 4px 6px; border: 1px solid var(--border);
+      border-radius: 6px; background: #fff; cursor: pointer;
+    }
+    .empty { padding: 32px; text-align: center; color: var(--muted); }
+    .footer { margin-top: 24px; color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title">每日問答報表</div>
+      <div class="controls">
+        <button id="reloadBtn" class="btn">重新載入</button>
+        <button id="expandAllBtn" class="btn ghost">展開全部</button>
+        <button id="collapseAllBtn" class="btn ghost">全部收合</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:10px;">
+      <div class="filters">
+        <label>
+          起始日期
+          <input id="startDate" type="date" />
+        </label>
+        <label>
+          結束日期
+          <input id="endDate" type="date" />
+        </label>
+        <label>
+          搜尋（內容、ID）
+          <input id="searchInput" type="text" placeholder="輸入關鍵字…" />
+        </label>
+        <label class="hint">
+          <input id="useUTC" type="checkbox" />
+          使用 UTC 顯示時間
+        </label>
+        <button id="applyFilterBtn" class="btn primary">套用過濾</button>
+        <span id="totalSummary" class="hint"></span>
+      </div>
+    </div>
+
+    <div id="daysRoot"></div>
+
+    <div class="footer">
+      來源：<code class="mono">/api/reports/daily?flat=1</code>（同網域）：將每筆 <span class="role-badge role-user">user</span> 與下一筆 <span class="role-badge role-assistant">assistant</span> 依序成對。出現孤兒訊息時會保留顯示。
+    </div>
+  </div>
+
+<script>
+(async function() {
+  // === 設定 ===
+  const API_URL = "/api/reports/daily?flat=1"; // 同網域
+  const daysRoot = document.getElementById("daysRoot");
+  const reloadBtn = document.getElementById("reloadBtn");
+  const expandAllBtn = document.getElementById("expandAllBtn");
+  const collapseAllBtn = document.getElementById("collapseAllBtn");
+  const startDateEl = document.getElementById("startDate");
+  const endDateEl = document.getElementById("endDate");
+  const searchInput = document.getElementById("searchInput");
+  const applyFilterBtn = document.getElementById("applyFilterBtn");
+  const useUTCEl = document.getElementById("useUTC");
+  const totalSummary = document.getElementById("totalSummary");
+
+  let rawLogs = [];
+  let viewLogs = [];
+
+  reloadBtn.addEventListener("click", loadAndRender);
+  applyFilterBtn.addEventListener("click", render);
+  expandAllBtn.addEventListener("click", () => setAllDaysOpen(true));
+  collapseAllBtn.addEventListener("click", () => setAllDaysOpen(false));
+  searchInput.addEventListener("keydown", (e) => { if (e.key === "Enter") render(); });
+
+  function escapeHTML(s) {
+    return (s ?? "").toString()
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+
+  function parseJSONFlexible(data) {
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.data)) return data.data;
+    if (data && Array.isArray(data.items)) return data.items;
+    if (data && Array.isArray(data.logs)) return data.logs;
+    return [];
+  }
+
+  function toDateKey(ts, useUTC) {
+    const d = new Date(ts);
+    if (useUTC) {
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth()+1).padStart(2,"0");
+      const day = String(d.getUTCDate()).padStart(2,"0");
+      return `${y}-${m}-${day}`;
+    } else {
+      const y = d.getFullYear();
+      const m = String(d.getMonth()+1).padStart(2,"0");
+      const day = String(d.getDate()).padStart(2,"0");
+      return `${y}-${m}-${day}`;
+    }
+  }
+
+  function fmtTime(ts, useUTC) {
+    const d = new Date(ts);
+    const y = useUTC ? d.getUTCFullYear() : d.getFullYear();
+    const m = (useUTC ? d.getUTCMonth() : d.getMonth())+1;
+    const day = useUTC ? d.getUTCDate() : d.getDate();
+    const hh = String(useUTC ? d.getUTCHours() : d.getHours()).padStart(2,"0");
+    const mm = String(useUTC ? d.getUTCMinutes() : d.getMinutes()).padStart(2,"0");
+    const ss = String(useUTC ? d.getUTCSeconds() : d.getSeconds()).padStart(2,"0");
+    return `${y}-${String(m).padStart(2,"0")}-${String(day).padStart(2,"0")} ${hh}:${mm}:${ss}`;
+  }
+
+  function diffSeconds(aTs, bTs) {
+    if (!aTs || !bTs) return null;
+    const a = new Date(aTs).getTime();
+    const b = new Date(bTs).getTime();
+    return Math.max(0, Math.round((b - a)/1000));
+  }
+
+  function applyFilters(logs) {
+    const useUTC = useUTCEl.checked;
+    const start = startDateEl.value ? new Date(startDateEl.value + (useUTC ? "T00:00:00Z" : "T00:00:00")) : null;
+    const end = endDateEl.value ? new Date(endDateEl.value + (useUTC ? "T23:59:59Z" : "T23:59:59")) : null;
+    const q = (searchInput.value || "").trim().toLowerCase();
+
+    return logs.filter(item => {
+      const t = new Date(item.ts);
+      if (start && t < start) return false;
+      if (end && t > end) return false;
+      if (q) {
+        const hay = `${item.role}|${item.userId}|${item.sessionId}|${item.eventId}|${item.content}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+
+  function groupByDate(logs) {
+    const useUTC = useUTCEl.checked;
+    const map = new Map();
+    for (const it of logs) {
+      const key = toDateKey(it.ts, useUTC);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(it);
+    }
+    // 依時間排序
+    for (const arr of map.values()) {
+      arr.sort((a,b) => new Date(a.ts) - new Date(b.ts));
+    }
+    // 依日期排序（新到舊）
+    const entries = [...map.entries()].sort((a,b) => new Date(b[0]) - new Date(a[0]));
+    return entries;
+  }
+
+  // 將「依時間排序」的單日 log 做「成對」
+  function pairByOrder(dayLogs) {
+    const pairs = [];
+    let pendingUser = null;
+
+    for (const log of dayLogs) {
+      if (log.role === "user") {
+        // 如果有尚未配對的 user，先推入（assistant 為 null 的孤兒）
+        if (pendingUser) {
+          pairs.push({ user: pendingUser, assistant: null });
+        }
+        pendingUser = log;
+      } else if (log.role === "assistant") {
+        if (pendingUser) {
+          pairs.push({ user: pendingUser, assistant: log });
+          pendingUser = null;
+        } else {
+          // 沒有相對應 user，當成孤兒 assistant
+          pairs.push({ user: null, assistant: log });
+        }
+      } else {
+        // 其他角色（system 等）以單獨一列顯示
+        pairs.push({ user: log.role === "user" ? log : null, assistant: log.role === "assistant" ? log : null, other: log });
+      }
+    }
+    if (pendingUser) pairs.push({ user: pendingUser, assistant: null });
+    return pairs;
+  }
+
+  function render() {
+    const filtered = applyFilters(rawLogs);
+    viewLogs = filtered;
+
+    const total = filtered.length;
+    const users = filtered.filter(x => x.role === "user").length;
+    const assistants = filtered.filter(x => x.role === "assistant").length;
+    totalSummary.textContent = `目前顯示：共 ${total} 筆（user: ${users}, assistant: ${assistants}）`;
+
+    const groups = groupByDate(filtered);
+    daysRoot.innerHTML = "";
+    if (groups.length === 0) {
+      daysRoot.innerHTML = `<div class="card empty">尚無資料或過濾結果為空。</div>`;
+      return;
+    }
+
+    for (const [dateKey, items] of groups) {
+      const pairs = pairByOrder(items);
+      const pairedCount = pairs.filter(p => p.user && p.assistant).length;
+      const orphanUsers = pairs.filter(p => p.user && !p.assistant).length;
+      const orphanAssistants = pairs.filter(p => !p.user && p.assistant).length;
+
+      const dayEl = document.createElement("section");
+      dayEl.className = "card day";
+      dayEl.innerHTML = `
+        <div class="day-header" data-toggle>
+          <h3>${dateKey}</h3>
+          <div class="meta">
+            <span class="pill ok">配對 ${pairedCount}</span>
+            <span class="pill warn">孤兒 user ${orphanUsers}</span>
+            <span class="pill warn">孤兒 assistant ${orphanAssistants}</span>
+            <span class="pill">總筆數 ${items.length}</span>
+            <span class="tools">
+              <button class="btn ghost" data-export="${dateKey}">匯出 CSV</button>
+            </span>
+          </div>
+        </div>
+        <div class="day-body">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:56px;">#</th>
+                  <th>用戶時間</th>
+                  <th>用戶內容</th>
+                  <th>助理時間</th>
+                  <th>助理內容</th>
+                  <th style="white-space:nowrap;">回應延遲（秒）</th>
+                  <th>IDs</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      `;
+      const tbody = dayEl.querySelector("tbody");
+
+      pairs.forEach((pair, idx) => {
+        const u = pair.user;
+        const a = pair.assistant;
+        const useUTC = useUTCEl.checked;
+
+        const uTime = u ? fmtTime(u.ts, useUTC) : "";
+        const aTime = a ? fmtTime(a.ts, useUTC) : "";
+        const latency = (u && a) ? diffSeconds(u.ts, a.ts) : null;
+
+        const idsText = [
+          u ? `U:${u.eventId}` : null,
+          a ? `A:${a.eventId}` : null,
+          u && u.sessionId ? `SID:${u.sessionId}` : (a && a.sessionId ? `SID:${a.sessionId}` : null),
+          u && u.userId ? `UID:${u.userId}` : (a && a.userId ? `UID:${a.userId}` : null),
+        ].filter(Boolean).join(" | ");
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="mono">${idx + 1}</td>
+          <td class="mono">${escapeHTML(uTime)}</td>
+          <td>
+            ${u ? `<span class="role-badge role-user">user</span>` : ""}
+            <div class="content">${escapeHTML(u ? u.content : "—")}</div>
+            ${u ? `<button class="copy-btn" data-copy="${escapeHTML(u.content)}">複製</button>` : ""}
+          </td>
+          <td class="mono">${escapeHTML(aTime)}</td>
+          <td>
+            ${a ? `<span class="role-badge role-assistant">assistant</span>` : ""}
+            <div class="content">${escapeHTML(a ? a.content : "—")}</div>
+            ${a ? `<button class="copy-btn" data-copy="${escapeHTML(a.content)}">複製</button>` : ""}
+          </td>
+          <td>${latency == null ? "—" : `<span class="mono">${latency}</span>`}</td>
+          <td>
+            <div class="mono" style="white-space:pre-wrap;word-break:break-word;">${escapeHTML(idsText || "—")}</div>
+            ${idsText ? `<button class="copy-btn" data-copy="${escapeHTML(idsText)}">複製 IDs</button>` : ""}
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      // 事件：展開/收合
+      dayEl.querySelector('[data-toggle]').addEventListener('click', () => {
+        dayEl.classList.toggle('open');
+      });
+
+      // 事件：匯出 CSV
+      dayEl.querySelector('[data-export]').addEventListener('click', () => {
+        const csv = buildCSV(pairs);
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `weider_digest_${dateKey}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      });
+
+      daysRoot.appendChild(dayEl);
+    }
+  }
+
+  function setAllDaysOpen(open) {
+    document.querySelectorAll(".day").forEach(el => {
+      if (open) el.classList.add("open"); else el.classList.remove("open");
+    });
+  }
+
+  function buildCSV(pairs) {
+    const headers = [
+      "index","user_time","user_content","assistant_time","assistant_content","latency_sec","user_eventId","assistant_eventId","userId","sessionId"
+    ];
+    const lines = [headers.join(",")];
+    const useUTC = useUTCEl.checked;
+
+    pairs.forEach((pair, idx) => {
+      const u = pair.user, a = pair.assistant;
+      const row = [
+        idx+1,
+        u ? fmtTime(u.ts, useUTC) : "",
+        csvEscape(u?.content || ""),
+        a ? fmtTime(a.ts, useUTC) : "",
+        csvEscape(a?.content || ""),
+        u && a ? diffSeconds(u.ts, a.ts) : "",
+        u?.eventId || "",
+        a?.eventId || "",
+        (u?.userId || a?.userId || ""),
+        (u?.sessionId || a?.sessionId || ""),
+      ];
+      lines.push(row.join(","));
+    });
+    return lines.join("\n");
+  }
+
+  function csvEscape(s) {
+    const str = (s ?? "").toString().replaceAll('"','""');
+    if (/[",\n]/.test(str)) return `"${str}"`;
+    return str;
+  }
+
+  async function loadAndRender() {
+    daysRoot.innerHTML = `<div class="card empty">載入中…</div>`;
+    try {
+      const res = await fetch(API_URL, { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const arr = parseJSONFlexible(data);
+
+      // 僅接受擁有必要欄位的紀錄
+      rawLogs = arr
+        .filter(x => x && x.ts && x.role && typeof x.content !== "undefined")
+        .map(x => ({
+          ts: x.ts,
+          userId: x.userId ?? "",
+          sessionId: x.sessionId ?? "",
+          role: x.role,
+          content: x.content ?? "",
+          eventId: x.eventId ?? "",
+        }))
+        .sort((a,b) => new Date(a.ts) - new Date(b.ts)); // 總序時間排序
+
+      // 預設展開最近一天
+      render();
+      const firstDay = document.querySelector(".day");
+      if (firstDay) firstDay.classList.add("open");
+    } catch (e) {
+      console.error(e);
+      daysRoot.innerHTML = `<div class="card empty">載入失敗：${escapeHTML(String(e))}<br/>請確認此檔案與 API 是否同網域可互通。</div>`;
+    }
+  }
+
+  await loadAndRender();
+})();
+</script>
+</body>
+</html>
