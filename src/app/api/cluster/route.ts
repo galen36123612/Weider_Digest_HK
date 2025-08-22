@@ -1,5 +1,6 @@
 // 0822 AI gpt-4o-mini cluster
 import OpenAI from "openai";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
 export const runtime = "nodejs";
 
@@ -27,7 +28,7 @@ type Body = {
   judgeBudget?: number;         // 最多做幾次 judge，預設 50
 };
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 export async function POST(req: Request) {
   try {
@@ -41,7 +42,7 @@ export async function POST(req: Request) {
     const method = body.method ?? "embeddings";
     const judgeBudgetMax = Math.max(0, Math.min(body.judgeBudget ?? 50, 200));
 
-    // 1) 先把 logs 依 sessionId + ts 排序，做 user→assistant 的配對
+    // 1) 依 sessionId + ts 排序，做 user→assistant 的配對
     const pairs = pairBySession(body.logs);
 
     if (pairs.length === 0) {
@@ -50,7 +51,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // 2) 建立要嵌入的字串（可以選擇把 A 也併進去）
+    // 2) 建立要嵌入的字串（可選把 A 也併進去）
     const texts = pairs.map(p => {
       if (includeAnswer && p.assistantText) {
         return `Q: ${p.userText}\nA: ${p.assistantText}`;
@@ -58,15 +59,14 @@ export async function POST(req: Request) {
       return p.userText;
     });
 
-    // 3) 批量 Embeddings（分批避免太大）
+    // 3) 批量 Embeddings
     const vectors = await embedBatch(texts);
 
-    // 4) 分群（貪婪式；用 centroid 以降低順序敏感）
+    // 4) 分群（貪婪 + centroid）
     let judgeBudget = judgeBudgetMax;
     const clusters: {
       repr: string;           // 第一個樣例（原句）
       reprIdx: number;        // 代表向量的 index
-      norm?: string;
       centroid: number[];     // 群心
       count: number;
       examples: string[];
@@ -90,7 +90,7 @@ export async function POST(req: Request) {
 
       let shouldJoin = bestSim >= threshold;
 
-      // 可選：臨界值附近再用 4o-mini 判一次（僅 method=judge 時）
+      // 臨界值附近用 4o-mini 補判（僅 method=judge）
       if (!shouldJoin && method === "judge" && judgeBudget > 0 && bestIdx >= 0 && bestSim >= threshold - 0.05) {
         const c = clusters[bestIdx];
         const verdict = await sameIntentJudge(
@@ -121,7 +121,9 @@ export async function POST(req: Request) {
       }
     }
 
-    clusters.sort((a, b) => (b.count - a.count) || (new Date(b.lastTs).getTime() - new Date(a.lastTs).getTime()));
+    clusters.sort(
+      (a, b) => (b.count - a.count) || (new Date(b.lastTs).getTime() - new Date(a.lastTs).getTime())
+    );
 
     const out = clusters.map((c, i) => ({
       rank: i + 1,
@@ -131,9 +133,10 @@ export async function POST(req: Request) {
       examples: c.examples.slice(-5),
     }));
 
-    return new Response(JSON.stringify({ clusters: out, used: { threshold, includeAnswer, method, n: pairs.length } }, null, 2), {
-      headers: { "content-type": "application/json; charset=utf-8" },
-    });
+    return new Response(
+      JSON.stringify({ clusters: out, used: { threshold, includeAnswer, method, n: pairs.length } }, null, 2),
+      { headers: { "content-type": "application/json; charset=utf-8" } }
+    );
 
   } catch (e: any) {
     return new Response(JSON.stringify({ error: String(e?.message || e) }), { status: 500 });
@@ -203,22 +206,37 @@ async function embedBatch(texts: string[]) {
       model: "text-embedding-3-small",
       input: chunk,
     });
-    for (const item of resp.data) out.push(item.embedding as unknown as number[]);
+    for (const item of resp.data) out.push(item.embedding as number[]);
   }
   return out;
 }
 
+/**
+ * 用 4o-mini 補判兩段查詢是否為「同一意圖」
+ * - 關鍵修正：把 messages 明確標成 ChatCompletionMessageParam[]，避免被寬化為 { role: string }
+ */
 async function sameIntentJudge(a: string, b: string, hasAnswer: boolean, openai: OpenAI) {
-  const prompt = [
-    { role: "system", content: "你是判斷兩段查詢是否為『同一意圖』的助理。只回答 JSON: {\"same\": true|false}。" },
-    { role: "user", content: `請判斷兩個查詢是否同一意圖。\n判斷標準：若回答解法/內容高度重疊，視為同一意圖。\nA是否包含回答：${hasAnswer ? "是" : "否"}\n\n查詢1：\n${a}\n\n查詢2：\n${b}` }
+  const messages: ChatCompletionMessageParam[] = [
+    {
+      role: "system",
+      content: "你是判斷兩段查詢是否為『同一意圖』的助理。只回答 JSON: {\"same\": true|false}。"
+    },
+    {
+      role: "user",
+      content:
+        `請判斷兩個查詢是否同一意圖。\n` +
+        `判斷標準：若回答解法/內容高度重疊，視為同一意圖。\n` +
+        `A是否包含回答：${hasAnswer ? "是" : "否"}\n\n` +
+        `查詢1：\n${a}\n\n查詢2：\n${b}`
+    }
   ];
+
   try {
     const r = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
       response_format: { type: "json_object" },
-      messages: prompt,
+      messages, // ✅ 型別正確
     });
     const txt = r.choices?.[0]?.message?.content || "{}";
     const parsed = JSON.parse(txt);
@@ -227,3 +245,4 @@ async function sameIntentJudge(a: string, b: string, hasAnswer: boolean, openai:
     return false;
   }
 }
+
