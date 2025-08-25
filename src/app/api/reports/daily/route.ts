@@ -181,7 +181,7 @@ export async function GET(req: Request) {
 
 // 0825 add emoji feedback logs-daily-app-transcript-report_html
 
-import { list } from "@vercel/blob";
+/*import { list } from "@vercel/blob";
 
 export const runtime = "nodejs";
 
@@ -320,4 +320,214 @@ export async function GET(req: Request) {
   return new Response(JSON.stringify({ day, totalPairs: pairs.length, pairs }, null, 2), {
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
+}*/
+
+// 0825 fixing the report_html satisfy scale missing
+
+import { list } from "@vercel/blob";
+
+export const runtime = "nodejs";
+
+type LogRec = {
+  ts: string;
+  sessionId: string;
+  userId: string;
+  role: string;                  // 放寬以容納 "feedback"
+  content: string;
+  eventId?: string;
+  rating?: number;               // feedback 可能有
+  targetEventId?: string;        // feedback 可能有（常見為 item_*）
+  // 下面四個欄位為「合併後」放到 assistant 上
+  ratingTs?: string;
+  ratingEventId?: string;
+  feedbackTargetId?: string;
+};
+
+function tpeDay(d?: string) {
+  const base = d ? new Date(d) : new Date();
+  const tpe = new Date(base.getTime() + 8 * 60 * 60 * 1000);
+  return tpe.toISOString().slice(0, 10); // YYYY-MM-DD
 }
+
+function toCsv(rows: any[], headers: string[]) {
+  const headerLine = headers.join(",");
+  const lines = rows.map((r) =>
+    headers
+      .map((h) => {
+        const v = (r as any)[h] ?? "";
+        const s = String(v).replace(/"/g, '""');
+        return /[,"\n]/.test(s) ? `"${s}"` : s;
+      })
+      .join(",")
+  );
+  return headerLine + "\n" + lines.join("\n");
+}
+
+// 從 feedback.content 解析 target / value（保險起見，若沒有 rating/targetEventId 欄位）
+function parseFeedbackFields(log: LogRec) {
+  const txt = String(log.content || "");
+  const mVal = /value=(\d{1,3})/.exec(txt);
+  const mTarget = /target=([^\s]+)/.exec(txt);
+  const rating = typeof log.rating === "number" ? log.rating : (mVal ? parseInt(mVal[1], 10) : undefined);
+  const targetEventId = log.targetEventId || (mTarget ? mTarget[1] : undefined);
+  return { rating, targetEventId };
+}
+
+function ms(ts: string) { return new Date(ts).getTime(); }
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const day = url.searchParams.get("day") || tpeDay();
+  const detail = url.searchParams.get("detail") === "1";
+  const flat = url.searchParams.get("flat") === "1";
+  const format = (url.searchParams.get("format") || "json").toLowerCase();
+
+  const prefix = `logs/${day}/`;
+  const { blobs } = await list({ prefix });
+
+  // 讀取當天所有 log（包含 user/assistant/feedback）
+  const all: LogRec[] = [];
+  for (const b of blobs) {
+    const res = await fetch(b.url);
+    if (!res.ok) continue;
+    const txt = await res.text();
+    try {
+      const j = JSON.parse(txt);
+      if (j && j.ts && j.role) all.push(j);
+    } catch {}
+  }
+
+  // 依時間排序（舊到新）
+  all.sort((a, b) => a.ts.localeCompare(b.ts));
+
+  // 分箱
+  const users = all.filter(r => r.role === "user");
+  const assistants = all.filter(r => r.role === "assistant");
+  const feedbacks = all
+    .filter(r => r.role === "feedback")
+    .map(f => {
+      const { rating, targetEventId } = parseFeedbackFields(f);
+      return { ...f, rating, targetEventId };
+    })
+    .filter(f => typeof f.rating === "number"); // 只保留有效評分
+
+  // 將 feedback 依時間合併到最近的 assistant（優先找「feedback 前」最近者）
+  const WINDOW_MS = 2 * 60 * 1000; // 2 分鐘
+  for (const fb of feedbacks) {
+    const fms = ms(fb.ts);
+
+    // 1) 嘗試 eventId 直接對上（若 targetEventId 就是 assistant 的 eventId）
+    let target = assistants.find(a => a.eventId && fb.targetEventId && a.eventId === fb.targetEventId);
+
+    // 2) 若無，找「feedback 前」最近的 assistant，時間窗口內
+    if (!target) {
+      let best: { a: LogRec; d: number } | null = null;
+      for (const a of assistants) {
+        const d = fms - ms(a.ts);
+        if (d >= 0 && d <= WINDOW_MS) {
+          if (!best || d < best.d) best = { a, d };
+        }
+      }
+      target = best?.a;
+    }
+
+    // 3) 若仍無，找「feedback 後」最近的 assistant，時間窗口內（備援）
+    if (!target) {
+      let best: { a: LogRec; d: number } | null = null;
+      for (const a of assistants) {
+        const d = ms(a.ts) - fms;
+        if (d >= 0 && d <= WINDOW_MS) {
+          if (!best || d < best.d) best = { a, d };
+        }
+      }
+      target = best?.a;
+    }
+
+    if (target) {
+      (target as any).rating = fb.rating;
+      (target as any).ratingTs = fb.ts;
+      (target as any).ratingEventId = fb.eventId;
+      (target as any).feedbackTargetId = fb.targetEventId;
+    }
+  }
+
+  // === flat 模式：只輸出 user/assistant（feedback 已合併進 assistant） ===
+  if (flat) {
+    const merged = all.filter(r => r.role === "user" || r.role === "assistant");
+    return new Response(JSON.stringify({ day, total: merged.length, logs: merged }, null, 2), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+
+  // === 只要計數（維持既有行為，只算 user/assistant）===
+  if (!detail) {
+    const counts = (all.filter(r => r.role === "user" || r.role === "assistant"))
+      .reduce((acc, r) => ((acc[r.role] = (acc[r.role] || 0) + 1), acc), {} as Record<string, number>);
+    const out = [
+      { day, role: "assistant", count: counts["assistant"] || 0 },
+      { day, role: "user", count: counts["user"] || 0 },
+    ];
+    if (format === "csv") {
+      const csv = toCsv(out, ["day", "role", "count"]);
+      return new Response(csv, {
+        headers: { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
+    return new Response(JSON.stringify(out, null, 2), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+
+  // === detail=1：配對「使用者 → 助手」（用合併後陣列）===
+  const base = all.filter(r => r.role === "user" || r.role === "assistant");
+  // 依 session 再依時間排序
+  base.sort((a, b) => (a.sessionId || "").localeCompare(b.sessionId || "") || a.ts.localeCompare(b.ts));
+
+  const pairs: Array<{
+    day: string;
+    sessionId: string;
+    userTs: string;
+    userText: string;
+    assistantTs: string;
+    assistantText: string;
+    rating?: number;          // ✅ 新增
+    ratingTs?: string;        // ✅ 新增
+    feedbackTargetId?: string;// ✅ 新增（debug 對應 item_*）
+  }> = [];
+
+  const lastUserBySession: Record<string, LogRec | null> = {};
+  for (const rec of base) {
+    if (rec.role === "user") {
+      lastUserBySession[rec.sessionId || ""] = rec;
+    } else if (rec.role === "assistant") {
+      const u = lastUserBySession[rec.sessionId || ""];
+      if (u) {
+        pairs.push({
+          day,
+          sessionId: rec.sessionId,
+          userTs: u.ts,
+          userText: u.content,
+          assistantTs: rec.ts,
+          assistantText: rec.content,
+          rating: (rec as any).rating,
+          ratingTs: (rec as any).ratingTs,
+          feedbackTargetId: (rec as any).feedbackTargetId,
+        });
+        lastUserBySession[rec.sessionId || ""] = null;
+      }
+    }
+  }
+
+  if (format === "csv") {
+    const headers = ["day","sessionId","userTs","userText","assistantTs","assistantText","rating","ratingTs","feedbackTargetId"];
+    const csv = toCsv(pairs, headers);
+    return new Response(csv, {
+      headers: { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store" },
+    });
+  }
+
+  return new Response(JSON.stringify({ day, totalPairs: pairs.length, pairs }, null, 2), {
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
