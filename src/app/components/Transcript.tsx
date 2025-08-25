@@ -2998,7 +2998,7 @@ function Transcript({
   );
 }
 
-export default Transcript;
+export default Transcript;*/
 
 // 0825 V2 fixing first greed chat problem, fixing the rating number showing problem
 
