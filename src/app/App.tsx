@@ -15347,6 +15347,9 @@ import { useHandleServerEvent } from "./hooks/useHandleServerEvent";
 import { allAgentSets, defaultAgentSetKey } from "@/app/agentConfigs";
 import useAudioDownload from "./hooks/useAudioDownload";
 
+// ✅ 新增：統一日誌角色型別（含 feedback）
+type LogRole = "user" | "assistant" | "system" | "feedback";
+
 function AppContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -15368,8 +15371,10 @@ function AppContent() {
   const audioElement = useRef<HTMLAudioElement | null>(null);
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>("DISCONNECTED");
 
+  // ⭐️ 本地記錄：每個 assistant 訊息的評分（eventId -> 0/20/50/70/100）
   const [ratingsByTargetId, setRatingsByTargetId] = useState<Record<string, number>>({});
 
+  // ⭐️ 送出評分：UI 顯示表情；後端收到數字
   function sendSatisfactionRating(targetEventId: string, rating: number) {
     const payloadContent = `[RATING] target=${targetEventId} value=${rating}`;
     const feedbackId = `feedback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -15418,26 +15423,38 @@ function AppContent() {
 
   // 防重複記錄
   const loggedEventIds = useRef<Set<string>>(new Set());
+  // ✅ 放寬 pending 佇列的型別，支援 feedback 與評分欄位
   const pendingLogsRef = useRef<
-    Array<{ role: "user" | "assistant" | "system"; content: string; eventId?: string }>
+    Array<{
+      role: LogRole;
+      content: string;
+      eventId?: string;
+      pairId?: string;
+      timestamp?: number;
+      rating?: number;         // 可選：滿意度數字（0/20/50/70/100）
+      targetEventId?: string;  // 可選：被評分的 assistant 訊息 ID
+    }>
   >([]);
 
   // 🆕 對話配對日誌函數
-  function logConversationPair(userMsg: { content: string; eventId: string; timestamp: number }, assistantMsg: { content: string; eventId: string; timestamp: number }) {
+  function logConversationPair(
+    userMsg: { content: string; eventId: string; timestamp: number },
+    assistantMsg: { content: string; eventId: string; timestamp: number }
+  ) {
     const pairId = `pair_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    
+
     // 先記錄用戶訊息
-    reallyPostLog({ 
-      role: "user", 
-      content: userMsg.content, 
+    reallyPostLog({
+      role: "user",
+      content: userMsg.content,
       eventId: userMsg.eventId,
       pairId,
       timestamp: userMsg.timestamp
     }).then(() => {
       // 再記錄助手回應
-      return reallyPostLog({ 
-        role: "assistant", 
-        content: assistantMsg.content, 
+      return reallyPostLog({
+        role: "assistant",
+        content: assistantMsg.content,
         eventId: assistantMsg.eventId,
         pairId,
         timestamp: assistantMsg.timestamp
@@ -15449,13 +15466,15 @@ function AppContent() {
     });
   }
 
-  // 🔧 更新的 reallyPostLog 函數
-  async function reallyPostLog(log: { 
-    role: "user" | "assistant" | "system"; 
-    content: string; 
+  // 🔧 更新的 reallyPostLog 函數（接受 LogRole 與評分欄位）
+  async function reallyPostLog(log: {
+    role: LogRole;
+    content: string;
     eventId?: string;
     pairId?: string;
     timestamp?: number;
+    rating?: number;          // 可選
+    targetEventId?: string;   // 可選
   }) {
     const eventId = log.eventId || `${log.role}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     if (loggedEventIds.current.has(eventId)) {
@@ -15466,10 +15485,10 @@ function AppContent() {
 
     const uid = userId || "unknown";
     const sid = sessionId || "unknown";
-    const payload = { 
-      ...log, 
-      userId: uid, 
-      sessionId: sid, 
+    const payload = {
+      ...log,
+      userId: uid,
+      sessionId: sid,
       eventId,
       timestamp: log.timestamp || Date.now()
     };
@@ -15499,8 +15518,16 @@ function AppContent() {
     }
   }
 
-  // 保留原本的 postLog（用於系統訊息）
-  function postLog(log: { role: "user" | "assistant" | "system"; content: string; eventId?: string }) {
+  // 保留原本的 postLog（用於系統訊息）—型別也放寬到 LogRole
+  function postLog(log: {
+    role: LogRole;
+    content: string;
+    eventId?: string;
+    pairId?: string;
+    timestamp?: number;
+    rating?: number;
+    targetEventId?: string;
+  }) {
     if (!log.content?.trim()) {
       console.warn("🚫 postLog skipped: empty content");
       return;
@@ -15685,9 +15712,9 @@ function AppContent() {
           const raw = eventData.transcript || eventData.text || "";
           const normalized = raw && raw.trim() && raw.trim() !== "\n" ? raw.trim() : "[inaudible]";
           const eventId = eventData.item_id || `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-          
+
           console.log("🗣️ User speech completed:", normalized);
-          
+
           // 暫存用戶訊息，等待助手回應完成後一起記錄
           conversationState.current.currentUserMessage = {
             content: normalized,
@@ -15840,9 +15867,9 @@ function AppContent() {
             } else {
               // 沒有配對的用戶訊息，單獨記錄助手回應
               console.warn("⚠️ Assistant response without paired user message");
-              reallyPostLog({ 
-                role: "assistant", 
-                content: finalText, 
+              reallyPostLog({
+                role: "assistant",
+                content: finalText,
                 eventId: assistantMsg.eventId,
                 timestamp: assistantMsg.timestamp
               }).catch((error) => {
@@ -15987,7 +16014,7 @@ function AppContent() {
         };
 
     const instructions = currentAgent?.instructions || "";
-    const tools = currentAgent?.tools || [];
+    const tools = currentAgent?.tools || "";
 
     const sessionUpdateEvent = {
       type: "session.update",
@@ -16167,6 +16194,7 @@ function AppContent() {
           handleTalkButtonUp={handleTalkButtonUp}
           isPTTUserSpeaking={isPTTUserSpeaking}
           isPTTActive={isPTTActive}
+          // ⭐️ 評分相關 props（你已在 Transcript.tsx 中接收/渲染）
           onRate={sendSatisfactionRating}
           ratingsByTargetId={ratingsByTargetId}
         />
@@ -16191,6 +16219,7 @@ function App() {
 }
 
 export default App;
+
 
 
 
