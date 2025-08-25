@@ -4318,7 +4318,7 @@
   function daysInMonth(year, month) { return new Date(year, month, 0).getDate(); }
   function toYMD(d) {
     const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
+       const m = String(d.getMonth() + 1).padStart(2, "0");
     const day = String(d.getDate()).padStart(2, "0");
     return `${y}-${m}-${day}`;
   }
@@ -4451,22 +4451,40 @@
     }));
   }
 
-  // ====== 滿意度解析 ======
-  // 解析 feedback log：content 形如 "[RATING] target=<assistant_event_id> value=<num>"
+  // ====== 滿意度整合 ======
+  // 建 rating map：優先採用 assistant 物件裡的 rating / feedbackTargetId，再補 parse [RATING] 行
   function buildRatingMap(logs) {
-    const map = new Map(); // assistantEventId -> rating
+    const map = new Map(); // key: assistant eventId 或 targetId -> value: rating
+
+    // 先掃一次：收集直接掛在 assistant 的 rating
+    for (const it of logs) {
+      if (String(it.role || "").toLowerCase() !== "assistant") continue;
+      if (typeof it.rating === "number") {
+        if (it.eventId) map.set(it.eventId, it.rating);
+        if (it.feedbackTargetId) map.set(it.feedbackTargetId, it.rating);
+      }
+    }
+
+    // 再掃 feedback 行做補充（相容 detail=1 或非合併來源）
     const re = /\[RATING\]\s*target=([^\s]+)\s*value=(\d+)/i;
     for (const it of logs) {
       const role = String(it.role || "").toLowerCase();
-      if (role !== "feedback" && !(role === "system" && /^\[RATING\]/.test(String(it.content||"")))) continue;
+      if (role !== "feedback" && !(role === "system" && /^\[RATING\]/.test(String(it.content || "")))) continue;
       const m = re.exec(String(it.content || ""));
-      if (m) {
-        const target = m[1];
-        const val = parseInt(m[2], 10);
-        map.set(target, val); // 後寫覆蓋先寫
-      }
+      if (!m) continue;
+      const target = m[1];
+      const val = parseInt(m[2], 10);
+      map.set(target, val); // 後寫覆蓋先寫
     }
+
     return map;
+  }
+  function getRatingForAssistant(a, ratingMap) {
+    if (!a) return null;
+    if (typeof a.rating === "number") return a.rating;                    // 直接使用合併後欄位
+    if (a.eventId && ratingMap.has(a.eventId)) return ratingMap.get(a.eventId);
+    if (a.feedbackTargetId && ratingMap.has(a.feedbackTargetId)) return ratingMap.get(a.feedbackTargetId);
+    return null;
   }
   function ratingEmoji(val) {
     if (val == null || isNaN(val)) return "";
@@ -4641,7 +4659,7 @@
           u && u.userId ? `UID:${u.userId}` : (a && a.userId ? `UID:${a.userId}` : null),
         ].filter(Boolean).join(" | ");
 
-        const ratingVal = a ? ratingMap.get(a.eventId) : null;
+        const ratingVal = getRatingForAssistant(a, ratingMap);
         const ratingCell = ratingVal == null
           ? "—"
           : `<span title="滿意度">${ratingEmoji(ratingVal)} <span class="mono">(${ratingVal})</span></span>`;
@@ -4699,7 +4717,7 @@
 
     pairs.forEach((pair, idx) => {
       const u = pair.user, a = pair.assistant;
-      const ratingVal = a ? ratingMap.get(a.eventId) : null;
+      const ratingVal = getRatingForAssistant(a, ratingMap);
       const row = [
         idx+1,
         u ? fmtTime(u.ts, useUTC) : "",
@@ -4777,6 +4795,7 @@
           eventId: x.eventId ?? "",
           // 若後端已提供，保留；否則從 content 解析（在 buildRatingMap 會處理）
           rating: typeof x.rating === "number" ? x.rating : undefined,
+          feedbackTargetId: x.feedbackTargetId ?? undefined, // << 保留可能由後端合併後提供的 target
           targetEventId: x.targetEventId ?? undefined,
         }))
         .sort((a,b) => new Date(a.ts) - new Date(b.ts));
@@ -4899,6 +4918,7 @@
 </script>
 </body>
 </html>
+
 
 
 
