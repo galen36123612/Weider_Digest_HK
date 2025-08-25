@@ -2629,7 +2629,7 @@ export default Transcript;*/
 
 // 0825 add emoji feedback logs-daily-app-transcript-report_html
 
-import React, { useEffect, useRef, useState } from "react";
+/*import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { TranscriptItem } from "@/app/types";
 import Image from "next/image";
@@ -2701,7 +2701,7 @@ const AppleMicIcon: React.FC<{ isActive: boolean }> = ({ isActive }) => (
     xmlns="http://www.w3.org/2000/svg"
     className={isActive ? "text-white" : "text-gray-700"}
   >
-    {/* Microphone capsule */}
+    {}
     <rect 
       x="7" 
       y="2" 
@@ -2710,14 +2710,14 @@ const AppleMicIcon: React.FC<{ isActive: boolean }> = ({ isActive }) => (
       rx="3" 
       fill="currentColor"
     />
-    {/* Stand */}
+    {}
     <path 
       d="M5 10C5 12.7614 7.23858 15 10 15C12.7614 15 15 12.7614 15 10" 
       stroke="currentColor" 
       strokeWidth="1.5" 
       strokeLinecap="round"
     />
-    {/* Base line */}
+    {}
     <line 
       x1="10" 
       y1="15" 
@@ -2825,7 +2825,7 @@ function Transcript({
   return (
     <div className="flex flex-col flex-1 bg-white min-h-0 rounded-xl">
       <div className="flex flex-col flex-1 min-h-0">
-        {/* Transcript Content */}
+        {}
         <div
           ref={transcriptRef}
           className="overflow-auto p-4 flex flex-col gap-y-4 h-full"
@@ -2884,14 +2884,14 @@ function Transcript({
                       </div>
                     </div>
                     
-                    {/* 複製按鈕 - 只在 assistant 訊息上顯示 */}
+                    {}
                     {!isUser && (
                       <div className="absolute top-2 right-2">
                         <CopyButton text={displayTitle} />
                       </div>
                     )}
                   </div>
-                  {/* ⭐ 助理訊息下方：顯示評分列（表情） */}
+                  {}
                   {!isUser && onRate && assistantEventId && (
                     <RatingBar
                       selected={ratingsByTargetId?.[assistantEventId]}
@@ -2964,7 +2964,7 @@ function Transcript({
           placeholder="請輸入文字..."
         />
         
-        {/* Microphone button - only show when PTT mode is active */}
+        {}
         {isPTTActive && (
           <button
             onClick={() => {
@@ -2999,3 +2999,354 @@ function Transcript({
 }
 
 export default Transcript;
+
+// 0825 V2 fixing first greed chat problem, fixing the rating number showing problem
+
+"use client";
+
+import React, { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import { TranscriptItem } from "@/app/types";
+import Image from "next/image";
+import { useTranscript } from "@/app/contexts/TranscriptContext";
+import { Copy, Check } from "lucide-react";
+
+export interface TranscriptProps {
+  userText: string;
+  setUserText: (val: string) => void;
+  onSendMessage: () => void;
+  canSend: boolean;
+  downloadRecording: () => void;
+  // PTT
+  handleTalkButtonDown: () => void;
+  handleTalkButtonUp: () => void;
+  isPTTUserSpeaking: boolean;
+  isPTTActive: boolean;
+
+  // 🆕 滿意度（來自 App.tsx）
+  onRate?: (targetEventId: string, rating: number) => void;
+  ratingsByTargetId?: Record<string, number>;
+}
+
+/* ---------- 小工具：複製按鈕 ---------- */
+const CopyButton: React.FC<{ text: string }> = ({ text }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch (err) {
+      console.error("複製失敗:", err);
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textArea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCopy}
+      className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-all duration-200 hover:bg-gray-200 ${
+        copied ? "text-green-600 bg-green-50" : "text-gray-500"
+      }`}
+      title={copied ? "Copied!" : "Copy"}
+    >
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+};
+
+/* ---------- Apple 風格麥克風 ---------- */
+const AppleMicIcon: React.FC<{ isActive: boolean }> = ({ isActive }) => (
+  <svg
+    width="20"
+    height="20"
+    viewBox="0 0 20 20"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    className={isActive ? "text-white" : "text-gray-700"}
+  >
+    <rect x="7" y="2" width="6" height="10" rx="3" fill="currentColor" />
+    <path
+      d="M5 10C5 12.7614 7.23858 15 10 15C12.7614 15 15 12.7614 15 10"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    />
+    <line x1="10" y1="15" x2="10" y2="18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <line x1="7" y1="18" x2="13" y2="18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+);
+
+/* ---------- 滿意度列（只顯示表情，不顯示數字/括號） ---------- */
+type RatingOption = { value: number; emoji: string; label: string };
+
+const RATING_OPTIONS: RatingOption[] = [
+  { value: 100, emoji: "😍", label: "非常滿意" },
+  { value: 70, emoji: "😊", label: "滿意" },
+  { value: 50, emoji: "😐", label: "普通" },
+  { value: 20, emoji: "😕", label: "不滿意" },
+  { value: 0, emoji: "😡", label: "非常不滿意" },
+];
+
+const RatingBar: React.FC<{
+  selected?: number;
+  onSelect?: (score: number) => void;
+}> = ({ selected, onSelect }) => {
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <span className="text-xs text-gray-500">滿意度：</span>
+      <div className="flex items-center gap-2">
+        {RATING_OPTIONS.map((opt) => {
+          const isActive = selected === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              aria-label={opt.label}
+              title={opt.label}
+              onClick={() => onSelect?.(opt.value)}
+              className={[
+                "h-7 w-7 rounded-full flex items-center justify-center border transition",
+                isActive
+                  ? "border-blue-400 ring-2 ring-blue-200 bg-white"
+                  : "border-gray-200 hover:border-gray-300 bg-white",
+              ].join(" ")}
+            >
+              <span className="text-base leading-none">{opt.emoji}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+function Transcript({
+  userText,
+  setUserText,
+  onSendMessage,
+  canSend,
+  downloadRecording, // eslint-disable-line @typescript-eslint/no-unused-vars
+  handleTalkButtonDown,
+  handleTalkButtonUp,
+  isPTTUserSpeaking,
+  isPTTActive,
+  onRate,
+  ratingsByTargetId,
+}: TranscriptProps) {
+  const { transcriptItems, toggleTranscriptItemExpand } = useTranscript();
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const [prevLogs, setPrevLogs] = useState<TranscriptItem[]>([]);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  function scrollToBottom() {
+    if (transcriptRef.current) {
+      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+    }
+  }
+
+  // 找出「第一個助理訊息」索引，用來隱藏其滿意度列
+  const firstAssistantIndex = (() => {
+    const idx = transcriptItems.findIndex(
+      (it) => !it.isHidden && it.type === "MESSAGE" && it.role === "assistant"
+    );
+    return idx;
+  })();
+
+  useEffect(() => {
+    const hasNewMessage = transcriptItems.length > prevLogs.length;
+    const hasUpdatedMessage = transcriptItems.some((newItem, index) => {
+      const oldItem = prevLogs[index];
+      return oldItem && (newItem.title !== oldItem.title || newItem.data !== oldItem.data);
+    });
+
+    if (hasNewMessage || hasUpdatedMessage) {
+      scrollToBottom();
+    }
+
+    setPrevLogs(transcriptItems);
+  }, [transcriptItems]);
+
+  // Autofocus on load
+  useEffect(() => {
+    if (canSend && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [canSend]);
+
+  // 取得可用的 targetEventId（盡量對齊後端的 assistant eventId；找不到時回退 itemId）
+  function pickTargetEventId(item: TranscriptItem): string {
+    // 常見欄位嘗試：data.eventId / data.id / data.item_id / data.responseId
+    const anyItem: any = item as any;
+    const candidate =
+      anyItem?.data?.eventId ||
+      anyItem?.data?.id ||
+      anyItem?.data?.item_id ||
+      anyItem?.data?.responseId ||
+      anyItem?.eventId;
+    return candidate || item.itemId;
+  }
+
+  return (
+    <div className="flex flex-col flex-1 bg-white min-h-0 rounded-xl">
+      <div className="flex flex-col flex-1 min-h-0">
+        {/* Transcript Content */}
+        <div ref={transcriptRef} className="overflow-auto p-4 flex flex-col gap-y-4 h-full">
+          {transcriptItems.map((item, index) => {
+            const { itemId, type, role, data, expanded, timestamp, title = "", isHidden } = item;
+            if (isHidden) return null;
+
+            if (type === "MESSAGE") {
+              const isUser = role === "user";
+              const containerClasses = `flex justify-end flex-col ${isUser ? "items-end" : "items-start"}`;
+              const bubbleBase = `max-w-lg p-3 rounded-xl ${
+                isUser ? "bg-gray-900 text-gray-100" : "bg-gray-100 text-black"
+              }`;
+              const isBracketedMessage = title.startsWith("[") && title.endsWith("]");
+              const messageStyle = isBracketedMessage ? "italic text-gray-400" : "";
+              const displayTitle = isBracketedMessage ? title.slice(1, -1) : title;
+
+              // 目標 ID（評分使用）
+              const targetEventId = !isUser ? pickTargetEventId(item) : "";
+
+              // 目前分數
+              const selectedRating =
+                (!isUser && ratingsByTargetId && targetEventId && ratingsByTargetId[targetEventId]) || undefined;
+
+              // 是否顯示滿意度列：
+              // - 僅顯示在「助理」訊息
+              // - 且不是第一個助理訊息（歡迎語）
+              const isAssistant = role === "assistant";
+              const isFirstAssistant = index === firstAssistantIndex;
+              const showRatingBar = isAssistant && !isFirstAssistant && typeof onRate === "function";
+
+              return (
+                <div key={itemId} className={containerClasses}>
+                  <div className="max-w-lg relative">
+                    <div className={bubbleBase}>
+                      <div className={`text-xs ${isUser ? "text-gray-400" : "text-gray-500"} font-mono`}>
+                        {timestamp}
+                      </div>
+                      <div className={`whitespace-pre-wrap ${messageStyle}`}>
+                        <ReactMarkdown>{displayTitle}</ReactMarkdown>
+                      </div>
+
+                      {/* 🆕 滿意度（助理訊息 & 非第一個）— 只顯示表情，不顯示數字 */}
+                      {showRatingBar && (
+                        <RatingBar
+                          selected={selectedRating}
+                          onSelect={(score) => {
+                            if (!onRate || !targetEventId) return;
+                            onRate(targetEventId, score);
+                          }}
+                        />
+                      )}
+                    </div>
+
+                    {/* 複製按鈕：只在 assistant 顯示 */}
+                    {!isUser && (
+                      <div className="absolute top-2 right-2">
+                        <CopyButton text={displayTitle} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            } else if (type === "BREADCRUMB") {
+              return (
+                <div key={itemId} className="flex flex-col justify-start items-start text-gray-500 text-sm">
+                  <span className="text-xs font-mono">{timestamp}</span>
+                  <div
+                    className={`whitespace-pre-wrap flex items-center font-mono text-sm text-gray-800 ${
+                      data ? "cursor-pointer" : ""
+                    }`}
+                    onClick={() => data && toggleTranscriptItemExpand(itemId)}
+                  >
+                    {data && (
+                      <span
+                        className={`text-gray-400 mr-1 transform transition-transform duration-200 select-none font-mono ${
+                          expanded ? "rotate-90" : "rotate-0"
+                        }`}
+                      >
+                        ▶
+                      </span>
+                    )}
+                    {item.title}
+                  </div>
+                  {expanded && data && (
+                    <div className="text-gray-800 text-left">
+                      <pre className="border-l-2 ml-1 border-gray-200 whitespace-pre-wrap break-words font-mono text-xs mb-2 mt-2 pl-2">
+                        {JSON.stringify(data, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              );
+            } else {
+              return (
+                <div key={itemId} className="flex justify-center text-gray-500 text-sm italic font-mono">
+                  Unknown item type: {type} <span className="ml-2 text-xs">{timestamp}</span>
+                </div>
+              );
+            }
+          })}
+        </div>
+      </div>
+
+      {/* 輸入列 */}
+      <div className="p-4 flex items-center gap-x-2 flex-shrink-0 border-t border-gray-200">
+        <input
+          ref={inputRef}
+          type="text"
+          value={userText}
+          onChange={(e) => setUserText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && canSend) onSendMessage();
+          }}
+          className="flex-1 px-4 py-2 focus:outline-none"
+          placeholder="請輸入文字..."
+        />
+
+        {/* 麥克風（PTT 才顯示） */}
+        {isPTTActive && (
+          <button
+            onClick={() => {
+              if (isPTTUserSpeaking) {
+                handleTalkButtonUp();
+              } else {
+                handleTalkButtonDown();
+              }
+            }}
+            disabled={!canSend}
+            className={`${
+              isPTTUserSpeaking ? "bg-red-500 text-white" : "bg-gray-200 text-gray-700"
+            } rounded-full p-2 disabled:opacity-50 transition-colors`}
+            aria-label={isPTTUserSpeaking ? "Stop recording and send" : "Start recording"}
+          >
+            <AppleMicIcon isActive={isPTTUserSpeaking} />
+          </button>
+        )}
+
+        <button
+          onClick={onSendMessage}
+          disabled={!canSend || !userText.trim()}
+          className="bg-gray-900 text-white rounded-full px-2 py-2 disabled:opacity-50"
+        >
+          <Image src="arrow.svg" alt="Send" width={24} height={24} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default Transcript;
+
