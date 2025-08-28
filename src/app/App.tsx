@@ -15361,7 +15361,8 @@ function AppContent() {
   }
 
   const { transcriptItems } = useTranscript();
-  const { logClientEvent, logServerEvent } = useEvent();
+  // 移除未使用的 logServerEvent
+  const { logClientEvent } = useEvent();
 
   const [selectedAgentName, setSelectedAgentName] = useState<string>("");
   const [selectedAgentConfigSet, setSelectedAgentConfigSet] = useState<AgentConfig[] | null>(null);
@@ -15402,9 +15403,9 @@ function AppContent() {
 
   const { startRecording, stopRecording, downloadRecording } = useAudioDownload();
 
-  // 對話管理狀態
-  const [userId, setUserId] = useState<string>("");
-  const [sessionId, setSessionId] = useState<string>("");
+  // 對話管理狀態（本檔僅讀取，不更新 setter，避免 ESLint unused）
+  const [userId] = useState<string>("");
+  const [sessionId] = useState<string>("");
 
   // 新的對話管理系統
   const conversationState = useRef({
@@ -16287,6 +16288,7 @@ function App() {
 }
 
 export default App;
+
 
 
 
