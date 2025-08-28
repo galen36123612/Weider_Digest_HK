@@ -15963,7 +15963,8 @@ function AppContent() {
         body: offer.sdp,
         headers: { 
           // Authorization: `Bearer ${EPHEMERAL_KEY}`, 
-          "Content-Type": "application/sdp" },
+          "Content-Type": "application/sdp",
+        },
       });
       await pc.setRemoteDescription({ type: "answer" as RTCSdpType, sdp: await sdpResponse.text() });
 
