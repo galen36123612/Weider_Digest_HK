@@ -15958,10 +15958,12 @@ function AppContent() {
       //const model = "gpt-4o-realtime-preview-2024-12-17";
       const url =  "https://bookuhk.magv.com/worker/realtime";
       
-      const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
+      const sdpResponse = await fetch(url, {
         method: "POST",
         body: offer.sdp,
-        headers: { Authorization: `Bearer ${EPHEMERAL_KEY}`, "Content-Type": "application/sdp" },
+        headers: { 
+          // Authorization: `Bearer ${EPHEMERAL_KEY}`, 
+          "Content-Type": "application/sdp" },
       });
       await pc.setRemoteDescription({ type: "answer" as RTCSdpType, sdp: await sdpResponse.text() });
 
