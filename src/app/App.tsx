@@ -15643,10 +15643,10 @@ function AppContent() {
   async function connectToRealtime() {
     setSessionStatus("CONNECTING");
     try {
-      logClientEvent({ url: "/api/session" }, "fetch_session_token_request");
-      const tokenResponse = await fetch("/api/session");
-      const data = await tokenResponse.json();
-      logServerEvent(data, "fetch_session_token_response");
+      //logClientEvent({ url: "/api/session" }, "fetch_session_token_request");
+      //const tokenResponse = await fetch("/api/session");
+      //const data = await tokenResponse.json();
+      //logServerEvent(data, "fetch_session_token_response");
 
       if (data?.userId) {
         setUserId(data.userId);
@@ -15657,14 +15657,14 @@ function AppContent() {
         console.log("🔗 Session ID set:", data.sessionId.substring(0, 8) + "...");
       }
 
-      if (!data.client_secret?.value) {
-        logClientEvent(data, "error.no_ephemeral_key");
-        console.error("No ephemeral key provided by the server");
-        setSessionStatus("DISCONNECTED");
-        return;
+      //if (!data.client_secret?.value) {
+      //logClientEvent(data, "error.no_ephemeral_key");
+      //console.error("No ephemeral key provided by the server");
+      //setSessionStatus("DISCONNECTED");
+        //return;
       }
 
-      const EPHEMERAL_KEY = data.client_secret.value;
+      //const EPHEMERAL_KEY = data.client_secret.value;
 
       // WebRTC 設置
       const pc = new RTCPeerConnection();
