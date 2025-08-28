@@ -15950,12 +15950,14 @@ function AppContent() {
         }
       });
 
-      // 創建 WebRTC offer
+      // 創建 WebRTC offer -------------------------------------- Modify this line making HK user using chatgpt 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      const baseUrl = "https://api.openai.com/v1/realtime";
-      const model = "gpt-4o-realtime-preview-2024-12-17";
+      //const baseUrl = "https://api.openai.com/v1/realtime";
+      //const model = "gpt-4o-realtime-preview-2024-12-17";
+      const url =  "https://bookuhk.magv.com/worker/realtime";
+      
       const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
         method: "POST",
         body: offer.sdp,
