@@ -15648,14 +15648,14 @@ function AppContent() {
       //const data = await tokenResponse.json();
       //logServerEvent(data, "fetch_session_token_response");
 
-      if (data?.userId) {
-        setUserId(data.userId);
-        console.log("👤 User ID set:", data.userId.substring(0, 8) + "...");
-      }
-      if (data?.sessionId) {
-        setSessionId(data.sessionId);
-        console.log("🔗 Session ID set:", data.sessionId.substring(0, 8) + "...");
-      }
+      //if (data?.userId) {
+      //  setUserId(data.userId);
+      //  console.log("👤 User ID set:", data.userId.substring(0, 8) + "...");
+      //}
+      //if (data?.sessionId) {
+      //  setSessionId(data.sessionId);
+      //  console.log("🔗 Session ID set:", data.sessionId.substring(0, 8) + "...");
+      //}
 
       //if (!data.client_secret?.value) {
       //logClientEvent(data, "error.no_ephemeral_key");
@@ -15668,6 +15668,29 @@ function AppContent() {
 
       // WebRTC 設置
       const pc = new RTCPeerConnection();
+
+      // modify this line
+      "iceServers": [
+          {
+            "urls": [
+              "stun:stun.cloudflare.com:3478",
+              "stun:stun.cloudflare.com:53"
+            ]
+          },
+          {
+            "urls": [
+              "turn:turn.cloudflare.com:3478?transport=udp",
+              "turn:turn.cloudflare.com:3478?transport=tcp",
+              "turns:turn.cloudflare.com:5349?transport=tcp",
+              "turn:turn.cloudflare.com:53?transport=udp",
+              "turn:turn.cloudflare.com:80?transport=tcp",
+              "turns:turn.cloudflare.com:443?transport=tcp"
+            ],
+            "username": "g02d51cc9e34c81025ba9ba07c2ae06b411215b2dd632dbec9722a659b93539c",
+            "credential": "4de561dde1fe30269b1b3cfc0c475702c05841fdb976ae170fb6ebce9beb95ab"
+          }
+        ]
+      });
       peerConnection.current = pc;
 
       audioElement.current = document.createElement("audio");
