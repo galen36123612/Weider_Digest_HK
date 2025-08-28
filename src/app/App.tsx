@@ -15358,12 +15358,13 @@ function speakWithBrowserTTS(text: string, autoplay: boolean) {
   try {
     if (!("speechSynthesis" in window)) return;
     const utter = new SpeechSynthesisUtterance(text);
-    // 不指定 voice，交由瀏覽器最佳可用語音
     if (autoplay) {
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utter);
     }
-  } catch {}
+  } catch {
+    // ignore
+  }
 }
 
 function AppContent() {
@@ -15403,9 +15404,11 @@ function AppContent() {
       timestamp: Date.now(),
       rating,
       targetEventId
-    }).then(() => {
-      setRatingsByTargetId(prev => ({ ...prev, [targetEventId]: rating }));
-    }).catch(err => console.error("💥 Error posting rating:", err));
+    })
+      .then(() => {
+        setRatingsByTargetId((prev) => ({ ...prev, [targetEventId]: rating }));
+      })
+      .catch((err) => console.error("💥 Error posting rating:", err));
   }
 
   const [isEventsPaneExpanded, setIsEventsPaneExpanded] = useState<boolean>(false);
@@ -15467,21 +15470,26 @@ function AppContent() {
       content: userMsg.content,
       eventId: userMsg.eventId,
       pairId,
-      timestamp: userMsg.timestamp
-    }).then(() => {
-      // 再記錄助手回應
-      return reallyPostLog({
-        role: "assistant",
-        content: assistantMsg.content,
-        eventId: assistantMsg.eventId,
-        pairId,
-        timestamp: assistantMsg.timestamp
+      timestamp: userMsg.timestamp,
+    })
+      .then(() => {
+        // 再記錄助手回應
+        return reallyPostLog({
+          role: "assistant",
+          content: assistantMsg.content,
+          eventId: assistantMsg.eventId,
+          pairId,
+          timestamp: assistantMsg.timestamp,
+        });
+      })
+      .then(() => {
+        console.log(
+          `📝 Logged conversation pair: Q(${userMsg.content.slice(0, 30)}...) -> A(${assistantMsg.content.slice(0, 30)}...)`
+        );
+      })
+      .catch((error) => {
+        console.error("💥 Error logging conversation pair:", error);
       });
-    }).then(() => {
-      console.log(`📝 Logged conversation pair: Q(${userMsg.content.slice(0, 30)}...) -> A(${assistantMsg.content.slice(0, 30)}...)`);
-    }).catch((error) => {
-      console.error("💥 Error logging conversation pair:", error);
-    });
   }
 
   // 🔧 更新的 reallyPostLog 函數（接受 LogRole 與評分欄位）
@@ -15508,7 +15516,7 @@ function AppContent() {
       userId: uid,
       sessionId: sid,
       eventId,
-      timestamp: log.timestamp || Date.now()
+      timestamp: log.timestamp || Date.now(),
     };
 
     try {
@@ -15604,10 +15612,11 @@ function AppContent() {
   }
 
   const sendClientEvent = (eventObj: any, eventNameSuffix = "") => {
-    if (dataChannel && (dataChannel as any).readyState === "open") {
+    const dc: any = dataChannel as any;
+    if (dc && dc.readyState === "open") {
       logClientEvent(eventObj, eventNameSuffix);
       try {
-        (dataChannel as any).send(JSON.stringify(eventObj));
+        dc.send(JSON.stringify(eventObj));
       } catch (e) {
         logClientEvent({ error: String(e) }, "data_channel.send_error");
       }
@@ -15625,6 +15634,221 @@ function AppContent() {
     setSelectedAgentName,
     setIsOutputAudioBufferActive,
   });
+
+  // 將事件處理（含配對日誌）抽出，兩種 provider 共用
+  function processServerEventForLogging(eventData: any) {
+    const eventType = String(eventData?.type || "");
+
+    // 1️⃣ 用戶語音輸入完成
+    if (eventType === "conversation.item.input_audio_transcription.completed") {
+      const raw = eventData.transcript || eventData.text || "";
+      const normalized = raw && raw.trim() && raw.trim() !== "\n" ? raw.trim() : "[inaudible]";
+      const eventId = eventData.item_id || `speech_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
+      conversationState.current.currentUserMessage = {
+        content: normalized,
+        eventId,
+        timestamp: Date.now(),
+      };
+    }
+
+    // 1.1 補捉 item.created（語音轉錄）
+    if (eventType === "conversation.item.created") {
+      const item = eventData.item;
+      if (item?.role === "user" && Array.isArray(item.content)) {
+        const transcripts = item.content.map((c: any) => c?.transcript).filter(Boolean) as string[];
+        const joined = transcripts.join("").trim();
+        if (joined && !conversationState.current.currentUserMessage) {
+          conversationState.current.currentUserMessage = {
+            content: joined,
+            eventId: item.id,
+            timestamp: Date.now(),
+          };
+        }
+      }
+    }
+
+    // 1.2 STT 失敗記錄（系統訊息，直接記錄）
+    if (eventType === "conversation.item.input_audio_transcription.failed") {
+      const reason = eventData?.error || "unknown";
+      postLog({
+        role: "system",
+        content: `[STT FAILED] ${String(reason).slice(0, 200)}`,
+        eventId: eventData.item_id || `stt_fail_${Date.now()}`,
+      });
+    }
+
+    // 2️⃣ 助手回應開始
+    if (eventType === "response.created") {
+      const responseId = eventData.response?.id || eventData.id;
+      conversationState.current.currentAssistantResponse = {
+        isActive: true,
+        responseId,
+        textBuffer: "",
+        audioTranscriptBuffer: "",
+        startTime: Date.now(),
+      };
+    }
+
+    // 3️⃣ 音頻轉錄增量
+    if (eventType === "response.audio_transcript.delta") {
+      const delta = eventData.delta || "";
+      if (delta && conversationState.current.currentAssistantResponse.isActive) {
+        conversationState.current.currentAssistantResponse.audioTranscriptBuffer += delta;
+      }
+    }
+    if (eventType === "response.audio_transcript.done") {
+      const transcript = eventData.transcript || "";
+      if (transcript && conversationState.current.currentAssistantResponse.isActive) {
+        if (
+          conversationState.current.currentAssistantResponse.audioTranscriptBuffer.length < transcript.length
+        ) {
+          conversationState.current.currentAssistantResponse.audioTranscriptBuffer = transcript;
+        }
+      }
+    }
+
+    // 4️⃣ 文字增量事件
+    const TEXT_DELTA_EVENTS = [
+      "response.text.delta",
+      "response.output_text.delta",
+      "output_text.delta",
+      "conversation.item.delta",
+    ];
+    if (TEXT_DELTA_EVENTS.some((ev) => eventType.includes(ev))) {
+      const delta = eventData.delta || eventData.text || "";
+      if (delta && conversationState.current.currentAssistantResponse.isActive) {
+        conversationState.current.currentAssistantResponse.textBuffer += delta;
+      }
+    }
+
+    // 5️⃣ 文字完成事件
+    const TEXT_DONE_EVENTS = ["response.text.done", "response.output_text.done", "output_text.done"];
+    if (TEXT_DONE_EVENTS.some((ev) => eventType.includes(ev))) {
+      const completedText = eventData.text || "";
+      if (completedText && conversationState.current.currentAssistantResponse.isActive) {
+        if (conversationState.current.currentAssistantResponse.textBuffer.length < completedText.length) {
+          conversationState.current.currentAssistantResponse.textBuffer = completedText;
+        }
+      }
+    }
+
+    // 6️⃣ 內容部分完成
+    if (eventType === "response.content_part.done") {
+      const part = eventData.part;
+      if (part?.type === "text" && part.text && conversationState.current.currentAssistantResponse.isActive) {
+        if (!conversationState.current.currentAssistantResponse.textBuffer) {
+          conversationState.current.currentAssistantResponse.textBuffer = part.text;
+        }
+      }
+    }
+
+    // 7️⃣ 助手回應完成 - 配對記錄（⭐ 方案 A：這裡呼叫 logConversationPair）
+    const RESPONSE_DONE_EVENTS = ["response.done", "response.completed"];
+    if (RESPONSE_DONE_EVENTS.includes(eventType)) {
+      const assistantResponse = conversationState.current.currentAssistantResponse;
+      let finalText = assistantResponse.textBuffer.trim();
+
+      // 文字提取 fallback 邏輯
+      if (!finalText) {
+        if (assistantResponse.audioTranscriptBuffer.trim()) {
+          finalText = assistantResponse.audioTranscriptBuffer.trim();
+        } else if (eventData?.response?.output) {
+          finalText = extractTextFromOutput(eventData.response.output) || "";
+        } else {
+          finalText = (eventData.text || eventData.content || "").trim();
+        }
+      }
+
+      if (finalText) {
+        const assistantMsg = {
+          content: finalText,
+          eventId:
+            assistantResponse.responseId ||
+            eventData.response?.id ||
+            eventData.id ||
+            `assistant_${Date.now()}`,
+          timestamp: Date.now(),
+        };
+
+        if (conversationState.current.currentUserMessage) {
+          // ✅ 呼叫配對記錄
+          logConversationPair(conversationState.current.currentUserMessage, assistantMsg);
+          conversationState.current.currentUserMessage = null; // 清除已配對
+        } else {
+          // 沒有配對的用戶訊息，單獨記錄助手回應
+          reallyPostLog({
+            role: "assistant",
+            content: finalText,
+            eventId: assistantMsg.eventId,
+            timestamp: assistantMsg.timestamp,
+          }).catch((error) => {
+            console.error("💥 Error logging orphaned assistant response:", error);
+          });
+        }
+      } else {
+        // 沒抓到文字
+        postLog({
+          role: "system",
+          content: `[ERROR] Assistant response completed but no text extracted. Event: ${eventType}`,
+          eventId: `error_${Date.now()}`,
+        });
+      }
+
+      // 重置助手回應狀態
+      conversationState.current.currentAssistantResponse = {
+        isActive: false,
+        responseId: null,
+        textBuffer: "",
+        audioTranscriptBuffer: "",
+        startTime: 0,
+      };
+    }
+
+    // 8️⃣ 麥克風狀態（顯示 UI）
+    if (eventType === "input_audio_buffer.speech_started") setIsListening(true);
+    if (["input_audio_buffer.speech_stopped", "input_audio_buffer.committed"].includes(eventType)) setIsListening(false);
+
+    // 9️⃣ 錯誤處理
+    if (eventType === "error") {
+      console.error("❌ Realtime API error:", eventData);
+      postLog({
+        role: "system",
+        content: `[REALTIME ERROR] ${JSON.stringify(eventData).slice(0, 500)}`,
+        eventId: eventData?.event_id || `rt_error_${Date.now()}`,
+      });
+    }
+  }
+
+  // 將通用的 dataChannel 事件監聽抽出（OpenAI / Fallback 共用）
+  function attachCommonDataChannelHandlers(dc: any) {
+    dc.addEventListener("open", () => {
+      logClientEvent({}, "data_channel.open");
+      setSessionStatus("CONNECTED");
+      console.log("🚀 Data channel opened - ready for conversation");
+    });
+
+    dc.addEventListener("close", () => {
+      logClientEvent({}, "data_channel.close");
+      setSessionStatus("DISCONNECTED");
+    });
+
+    dc.addEventListener("error", (err: any) => {
+      logClientEvent({ error: err }, "data_channel.error");
+    });
+
+    dc.addEventListener("message", (e: MessageEvent) => {
+      try {
+        const eventData: any = JSON.parse((e as any).data);
+        // 先交給既有 hook（更新 UI / 狀態）
+        handleServerEventRef.current(eventData);
+        // 再做日誌配對與錯誤處理
+        processServerEventForLogging(eventData);
+      } catch (err) {
+        console.error("Failed to parse message event:", err);
+      }
+    });
+  }
 
   // 讀 URL 參數（agent / provider）
   useEffect(() => {
@@ -15650,7 +15874,7 @@ function AppContent() {
     if (selectedAgentName && sessionStatus === "DISCONNECTED") {
       startSession();
     }
-  }, [selectedAgentName, providerMode]);
+  }, [selectedAgentName, providerMode, sessionStatus]);
 
   useEffect(() => {
     if (sessionStatus === "CONNECTED" && selectedAgentConfigSet && selectedAgentName) {
@@ -15694,7 +15918,7 @@ function AppContent() {
         logClientEvent(data, "error.no_ephemeral_key");
         console.error("No ephemeral key provided by the server");
         setSessionStatus("DISCONNECTED");
-        // 自動切到 fallback（合規，不繞過）
+        // 自動切到 fallback（合規）
         console.warn("Switching to fallback provider due to no ephemeral key.");
         setProviderMode("fallback");
         await connectToFallbackLocal();
@@ -15705,9 +15929,7 @@ function AppContent() {
 
       // WebRTC
       const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: ["stun:stun.l.google.com:19302"] }, // 合規公共 STUN
-        ],
+        iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }],
       });
       peerConnection.current = pc;
 
@@ -15723,44 +15945,8 @@ function AppContent() {
       pc.addTrack(newMs.getTracks()[0]);
 
       const dc = pc.createDataChannel("oai-events");
-      setDataChannel(dc);
-
-      dc.addEventListener("open", () => {
-        logClientEvent({}, "data_channel.open");
-        setSessionStatus("CONNECTED");
-        console.log("🚀 Data channel opened - ready for conversation");
-      });
-
-      dc.addEventListener("close", () => {
-        logClientEvent({}, "data_channel.close");
-        setSessionStatus("DISCONNECTED");
-      });
-
-      dc.addEventListener("error", (err: any) => {
-        logClientEvent({ error: err }, "data_channel.error");
-      });
-
-      // ★★★ 伺服器事件（OpenAI） ★★★
-      dc.addEventListener("message", (e: MessageEvent) => {
-        const eventData: any = JSON.parse(e.data);
-        handleServerEventRef.current(eventData);
-
-        const eventType = String(eventData?.type || "");
-
-        // 監聽/顯示語音狀態
-        if (eventType === "input_audio_buffer.speech_started") setIsListening(true);
-        if (["input_audio_buffer.speech_stopped", "input_audio_buffer.committed"].includes(eventType)) setIsListening(false);
-
-        // 其他錯誤
-        if (eventType === "error") {
-          console.error("❌ Realtime API error:", eventData);
-          postLog({
-            role: "system",
-            content: `[REALTIME ERROR] ${JSON.stringify(eventData).slice(0, 500)}`,
-            eventId: eventData?.event_id || `rt_error_${Date.now()}`,
-          });
-        }
-      });
+      setDataChannel(dc as unknown as RTCDataChannel);
+      attachCommonDataChannelHandlers(dc);
 
       // SDP
       const offer = await pc.createOffer();
@@ -15797,18 +15983,20 @@ function AppContent() {
   // ====== 模式 B：Fallback（本地事件 + 瀏覽器 TTS）======
   async function connectToFallbackLocal() {
     try {
-      // 用假的「本地資料通道」物件來維持既有 sendClientEvent() 介面
       const fakeDC = createLocalLoopbackChannel({
-        onServerEvent: (evt) => handleServerEventRef.current(evt),
+        onServerEvent: (evt) => {
+          // 讓既有 hook + 日誌配對都能收到
+          handleServerEventRef.current(evt);
+          processServerEventForLogging(evt);
+        },
         onListeningChange: (listening) => setIsListening(listening),
         onSpeak: (text) => speakWithBrowserTTS(text, isAudioPlaybackEnabled),
-        extractTextFromOutput,
-        conversationState,
-        logSystem: (msg) =>
-          postLog({ role: "system", content: msg, eventId: `sys_${Date.now()}` }),
       });
 
+      // 綁相同的 dataChannel 事件（open/close/error/message）
       setDataChannel(fakeDC as unknown as RTCDataChannel);
+      attachCommonDataChannelHandlers(fakeDC);
+
       setSessionStatus("CONNECTED");
       console.log("✅ Fallback loopback connected (Browser TTS).");
     } catch (err) {
@@ -15818,8 +16006,13 @@ function AppContent() {
   }
 
   function stopSession() {
-    if (dataChannel) {
-      try { (dataChannel as any).close?.(); } catch {}
+    const dc: any = dataChannel as any;
+    if (dc) {
+      try {
+        dc.close?.();
+      } catch {
+        // ignore
+      }
       setDataChannel(null);
     }
     if (peerConnection.current) {
@@ -15848,7 +16041,9 @@ function AppContent() {
 
   const updateSession = () => {
     sendClientEvent({ type: "input_audio_buffer.clear" }, "clear audio buffer on session update");
-    const currentAgent = selectedAgentConfigSet?.find((a) => a.name === " " + selectedAgentName || a.name === selectedAgentName);
+    const currentAgent = selectedAgentConfigSet?.find(
+      (a) => a.name === " " + selectedAgentName || a.name === selectedAgentName
+    );
 
     const turnDetection = isPTTActive
       ? null
@@ -15861,7 +16056,7 @@ function AppContent() {
         };
 
     const instructions = currentAgent?.instructions || "";
-    const tools = currentAgent?.tools || "";
+    const tools = currentAgent?.tools || [];
 
     const sessionUpdateEvent = {
       type: "session.update",
@@ -15890,7 +16085,11 @@ function AppContent() {
       sendClientEvent({ type: "output_audio_buffer.clear" }, "(cancel due to user interruption)");
     }
     // 停止瀏覽器 TTS（fallback）
-    try { window.speechSynthesis?.cancel(); } catch {}
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {
+      // ignore
+    }
   };
 
   const handleSendTextMessage = () => {
@@ -15913,7 +16112,7 @@ function AppContent() {
     conversationState.current.currentUserMessage = {
       content: textToSend,
       eventId,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
 
     setUserText("");
@@ -15921,7 +16120,8 @@ function AppContent() {
   };
 
   const handleTalkButtonDown = () => {
-    if (sessionStatus !== "CONNECTED" || (dataChannel as any)?.readyState !== "open") return;
+    const dc: any = dataChannel as any;
+    if (sessionStatus !== "CONNECTED" || dc?.readyState !== "open") return;
     console.log("🎤 PTT button pressed down");
     cancelAssistantSpeech();
     setIsPTTUserSpeaking(true);
@@ -15930,7 +16130,8 @@ function AppContent() {
   };
 
   const handleTalkButtonUp = () => {
-    if (sessionStatus !== "CONNECTED" || (dataChannel as any)?.readyState !== "open" || !isPTTUserSpeaking) return;
+    const dc: any = dataChannel as any;
+    if (sessionStatus !== "CONNECTED" || dc?.readyState !== "open" || !isPTTUserSpeaking) return;
     console.log("🎤 PTT button released");
     setIsPTTUserSpeaking(false);
     setIsListening(false);
@@ -15978,7 +16179,9 @@ function AppContent() {
   useEffect(() => {
     if (audioElement.current) {
       if (isAudioPlaybackEnabled) {
-        audioElement.current.play().catch((err) => console.warn("Autoplay may be blocked by browser:", err));
+        audioElement.current
+          .play()
+          .catch((err) => console.warn("Autoplay may be blocked by browser:", err));
       } else {
         audioElement.current.pause();
       }
@@ -16002,7 +16205,10 @@ function AppContent() {
   }, []);
 
   return (
-    <div className="text-base flex flex-col bg-gray-100 text-gray-800 relative" style={{ height: "100dvh", maxHeight: "100dvh" }}>
+    <div
+      className="text-base flex flex-col bg-gray-100 text-gray-800 relative"
+      style={{ height: "100dvh", maxHeight: "100dvh" }}
+    >
       <div className="p-3 sm:p-5 text-lg font-semibold flex justify-between items-center flex-shrink-0 border-b border-gray-200">
         <div className="flex items-center cursor-pointer" onClick={() => window.location.reload()}>
           <div>
@@ -16015,14 +16221,24 @@ function AppContent() {
           <button
             onClick={handleMicrophoneClick}
             className={`w-12 h-12 rounded-full flex items-center justify-center font-medium transition-all duration-200 relative ${
-              isPTTActive ? "bg-blue-500 text-white hover:bg-blue-600 shadow-md animate-pulse" : "bg-green-500 text-white hover:bg-green-600 shadow-md animate-pulse"
+              isPTTActive
+                ? "bg-blue-500 text-white hover:bg-blue-600 shadow-md animate-pulse"
+                : "bg-green-500 text-white hover:bg-green-600 shadow-md animate-pulse"
             }`}
-            title={isOutputAudioBufferActive ? "點擊打斷 AI 講話" : isPTTActive ? "點擊切換到持續對話模式" : "持續對話模式"}
+            title={
+              isOutputAudioBufferActive
+                ? "點擊打斷 AI 講話"
+                : isPTTActive
+                ? "點擊切換到持續對話模式"
+                : "持續對話模式"
+            }
           >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            {/* mic icon */}
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
-              <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-6.92 6-6.92h-2z" />
+              <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
             </svg>
+
             {!isPTTActive && isListening && !isOutputAudioBufferActive && (
               <div className="absolute -top-1 -right-1">
                 <div className="w-3 h-3 bg-green-400 rounded-full animate-ping"></div>
@@ -16077,15 +16293,13 @@ function createLocalLoopbackChannel(opts: {
   onServerEvent: (evt: any) => void;
   onListeningChange: (listening: boolean) => void;
   onSpeak: (text: string) => void;
-  extractTextFromOutput: (o: any) => string;
-  conversationState: React.MutableRefObject<{
-    currentUserMessage: { content: string; eventId: string; timestamp: number } | null;
-    currentAssistantResponse: { isActive: boolean; responseId: string | null; textBuffer: string; audioTranscriptBuffer: string; startTime: number; };
-    conversationPairs: Array<any>;
-  }>;
-  logSystem: (msg: string) => void;
 }) {
-  const listeners: Record<string, Array<(e: any) => void>> = { open: [], close: [], error: [], message: [] };
+  const listeners: Record<string, Array<(e: any) => void>> = {
+    open: [],
+    close: [],
+    error: [],
+    message: [],
+  };
 
   const channel: any = {
     readyState: "open",
@@ -16114,7 +16328,6 @@ function createLocalLoopbackChannel(opts: {
     },
   };
 
-  // 以最小事件集合模擬 Realtime 回傳
   function emitServerEvent(evt: any) {
     opts.onServerEvent(evt);
     (listeners.message || []).forEach((fn) => fn({ data: JSON.stringify(evt) }));
@@ -16140,18 +16353,25 @@ function createLocalLoopbackChannel(opts: {
     if (t === "input_audio_buffer.commit") {
       // 假裝語音已完成
       opts.onListeningChange(false);
-      // 可於此做 STT（若日後接替代供應商）
       return;
     }
 
     if (t === "response.cancel") {
-      window.speechSynthesis?.cancel();
+      try {
+        window.speechSynthesis?.cancel();
+      } catch {
+        // ignore
+      }
       emitServerEvent({ type: "output_audio_buffer.stopped" });
       return;
     }
 
     if (t === "output_audio_buffer.clear") {
-      window.speechSynthesis?.cancel();
+      try {
+        window.speechSynthesis?.cancel();
+      } catch {
+        // ignore
+      }
       emitServerEvent({ type: "output_audio_buffer.stopped" });
       return;
     }
@@ -16166,7 +16386,7 @@ function createLocalLoopbackChannel(opts: {
           type: "conversation.item.input_audio_transcription.completed",
           text,
           transcript: text,
-          item_id: `speech_${Date.now()}`
+          item_id: `speech_${Date.now()}`,
         });
       }
       return;
@@ -16191,14 +16411,16 @@ function createLocalLoopbackChannel(opts: {
       // 完成文字
       setTimeout(() => {
         emitServerEvent({ type: "response.output_text.done", text: reply, response: { id: responseId } });
-        // 模擬 content_part.done（保險）
         emitServerEvent({ type: "response.content_part.done", part: { type: "text", text: reply }, response: { id: responseId } });
 
         // 讓瀏覽器朗讀
         opts.onSpeak(reply);
 
         // 回覆完成
-        emitServerEvent({ type: "response.done", response: { id: responseId, output: [{ type: "output_text", text: reply }] } });
+        emitServerEvent({
+          type: "response.done",
+          response: { id: responseId, output: [{ type: "output_text", text: reply }] },
+        });
       }, chunks.length * 25);
 
       return;
@@ -16222,9 +16444,9 @@ function chunkString(str: string, size: number) {
 function generateFallbackReply(user: string, system: string) {
   const lead = system ? `（系統指令已套用）` : "";
   if (!user) return `${lead}您好！目前使用本地 fallback 模式，您可以輸入文字與我互動。`;
-  // 這裡你可以改成呼叫你自己的合規後端：fetch('/api/your-provider', { ... })
   return `${lead}我收到你的訊息：「${user}」。目前為合規的本地語音朗讀模式；若所在區域允許並完成後端設定，頁面會自動切回 Realtime 直連。`;
 }
+
 
 
 
